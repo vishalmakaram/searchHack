@@ -48,7 +48,7 @@ export function describeEvent(event: RuntimeEvent): EventLine {
         case "failed":
           return { label: "Build", text: `Build failed${event.error ? `: ${clip(event.error)}` : ""}`, tone: "red" };
       }
-      return { label: "Build", text: String(event.phase), tone: "grey" };
+      return { label: "Build", text: "Building", tone: "grey" };
 
     case "agent": {
       const who = event.agent === "worker" ? "Delivery agent" : "Builder agent";
@@ -72,7 +72,7 @@ export function describeEvent(event: RuntimeEvent): EventLine {
         case "unchanged":
           return { label: "Run", text: `Unchanged since last time: ${url(event.url)}`, tone: "grey" };
       }
-      return { label: "Run", text: String(event.phase), tone: "grey" };
+      return { label: "Run", text: "Running", tone: "grey" };
 
     case "delivery":
       if (event.phase === "start") {

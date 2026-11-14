@@ -1,52 +1,37 @@
 "use client";
 
-import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
-import { ArrowRight, Check, LoaderCircle, Pencil, Plus, Trash2, X } from "lucide-react";
-import { useCallback, useId, useState } from "react";
-import {
-  approveWorkspace,
-  deleteWorkspace,
-  errorMessage,
-  getScript,
-  getWorkspace,
-  isNotFound,
-  updateWorkspace,
-} from "@/lib/api";
-import type { Frequency, ScriptView, WorkspaceView } from "@/lib/types";
+import { useParams } from "next/navigation";
+import { ArrowRight, Check, FileText, LoaderCircle, Inbox } from "lucide-react";
+import { useCallback, useMemo } from "react";
+import { getWorkspace, getWorkspaceOutput, isNotFound } from "@/lib/api";
+import { BUILD_ORDER, type BuildPhase } from "@/lib/events";
+import type { Alert, WorkspaceDetail as Workspace, WorkspaceOutput } from "@/lib/types";
 import { cn } from "@/lib/cn";
-import { formatDateTime, frequencyLabel, plural } from "@/lib/format";
-import { useNow } from "@/lib/use-now";
+import { formatDateTime, formatPercent, shortUrl } from "@/lib/format";
+import { useEventStream } from "@/lib/use-event-stream";
 import { usePoll } from "@/lib/use-poll";
+import { LiveFeed } from "@/components/live/live-feed";
 import { PageBody, PageHeader } from "@/components/shell/page";
-import { ScriptActivityBadge, ScriptStatusBadge, WorkspaceStatusBadge } from "@/components/status/badges";
+import { ImpactBadge, ScriptStatusBadge, StreamBadge, WorkspaceStatusBadge } from "@/components/status/badges";
 import { Notice } from "@/components/status/notice";
-import { Button, IconButton, LinkButton } from "@/components/ui/button";
+import { StatusPill } from "@/components/status/status-pill";
+import { LinkButton } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
-import { ConfirmDialog } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/field";
-import { RenameDialog } from "@/components/ui/rename-dialog";
-import { SchemaTable } from "@/components/ui/schema-table";
-import { PageSkeleton } from "@/components/ui/skeleton";
-import { ErrorState, NotFoundState, StaleBanner } from "@/components/ui/states";
+import { DetailList } from "@/components/ui/detail-list";
+import { ExpanderRow } from "@/components/ui/expander";
+import { Markdown } from "@/components/ui/markdown";
+import { Mono } from "@/components/ui/mono";
+import { RelativeTime } from "@/components/ui/relative-time";
+import { ListSkeleton, PageSkeleton } from "@/components/ui/skeleton";
+import { EmptyState, ErrorState, NotFoundState, StaleBanner } from "@/components/ui/states";
 
 const BACK = { href: "/workspaces", label: "Workspaces" };
-const FREQUENCIES: Frequency[] = ["1h", "6h", "12h", "1d", "7d"];
+const link = "underline decoration-line-strong underline-offset-4 hover:decoration-ink";
 
 export function WorkspaceDetail() {
   const { id } = useParams<{ id: string }>();
-  const router = useRouter();
-
-  const fetcher = useCallback(async () => {
-    const workspace = await getWorkspace(id);
-    // The script is a convenience here; the page still works if it can't be read.
-    const script = workspace.scriptId ? await getScript(workspace.scriptId).catch(() => null) : null;
-    return { workspace, script };
-  }, [id]);
-  const { data, error, refresh } = usePoll(fetcher);
-
-  const [renaming, setRenaming] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const fetcher = useCallback(() => getWorkspace(id), [id]);
+  const { data: workspace, error } = usePoll(fetcher);
 
   if (isNotFound(error)) {
     return (
@@ -56,7 +41,7 @@ export function WorkspaceDetail() {
       </PageBody>
     );
   }
-  if (!data) {
+  if (!workspace) {
     return error ? (
       <PageBody>
         <PageHeader title="Workspace" back={BACK} />
@@ -69,349 +54,320 @@ export function WorkspaceDetail() {
     );
   }
 
-  const { workspace, script } = data;
+  const hasBuild = workspace.status !== "output_only";
 
   return (
     <PageBody>
       <PageHeader
         back={BACK}
-        title={
-          <span className="inline-flex items-center gap-1.5">
-            {workspace.name}
-            <IconButton label="Rename workspace" onClick={() => setRenaming(true)}>
-              <Pencil className="size-4" aria-hidden />
-            </IconButton>
-          </span>
-        }
+        title={workspace.name}
         badges={<WorkspaceStatusBadge status={workspace.status} />}
+        description={workspace.query && workspace.query !== workspace.name ? workspace.query : undefined}
         actions={
-          <Button icon={<Trash2 className="size-4" aria-hidden />} onClick={() => setDeleting(true)}>
-            Delete
-          </Button>
+          workspace.status === "ready" ? (
+            <LinkButton href={`/scripts/${workspace.id}`} variant="primary">
+              Open script
+              <ArrowRight className="size-4" aria-hidden />
+            </LinkButton>
+          ) : null
         }
       />
       <StaleBanner error={error} />
 
-      <figure className="rounded-xl border border-line bg-surface px-5 py-4 shadow-card">
-        <figcaption className="text-xs text-ink-3">You asked Sentinel to watch for</figcaption>
-        <blockquote className="mt-1 text-[17px] leading-snug font-medium tracking-tight text-ink">
-          &ldquo;{workspace.intent}&rdquo;
-        </blockquote>
-      </figure>
-
-      {workspace.status === "compiling" ? <CompilingPanel workspace={workspace} /> : null}
-      {workspace.status === "awaiting_approval" ? (
-        // Keyed by id so the draft belongs to this workspace and polls never overwrite it.
-        <ApprovalForm key={workspace.id} workspace={workspace} onApproved={refresh} />
+      {workspace.status === "building" ? <BuildPanel workspaceId={workspace.id} /> : null}
+      {workspace.status === "failed" ? (
+        <Notice tone="red" title="The build failed">
+          {workspace.error ?? "The runtime did not record why."} Create a new workspace to try again.
+        </Notice>
       ) : null}
-      {workspace.status === "ready" ? <ReadyPanel workspace={workspace} script={script} /> : null}
+      {workspace.status === "interrupted" ? (
+        <Notice tone="amber" title="The build was interrupted">
+          The runtime restarted while it was building this workspace, so it has no script. Create a new workspace to try again.
+        </Notice>
+      ) : null}
+      {workspace.status === "output_only" ? (
+        <Notice tone="grey">
+          This folder only holds results the output service received. The runtime did not build it, so it has no script and nothing runs for it.
+        </Notice>
+      ) : null}
 
-      <RenameDialog
-        open={renaming}
-        onClose={() => setRenaming(false)}
-        title="Rename workspace"
-        initial={workspace.name}
-        onSave={async (name) => {
-          await updateWorkspace(workspace.id, { name });
-          await refresh();
-        }}
-      />
-      <ConfirmDialog
-        open={deleting}
-        onClose={() => setDeleting(false)}
-        title={`Delete ${workspace.name}?`}
-        description={
-          workspace.scriptId
-            ? "Its script and all of that script's runs are deleted too, and the script is removed from every webhook's routing. Deliveries already logged on webhooks stay. This can't be undone."
-            : "The workspace and its proposed queries are deleted. This can't be undone."
-        }
-        confirmLabel="Delete workspace"
-        danger
-        onConfirm={async () => {
-          await deleteWorkspace(workspace.id);
-          router.push("/workspaces");
-        }}
-      />
+      {hasBuild ? <Summary workspace={workspace} /> : null}
+      <OutputSection workspaceId={workspace.id} />
+      {hasBuild && workspace.status !== "building" ? <MemoryCard workspace={workspace} /> : null}
+      {workspace.status === "ready" ? (
+        <Card>
+          <CardHeader title="Live activity" description="Steps the runtime takes for this workspace, as they happen." actions={<Stream />} />
+          <div className="border-t border-line">
+            <LiveFeed workspaceId={workspace.id} empty="Run a page from the script to see each step here." />
+          </div>
+        </Card>
+      ) : null}
     </PageBody>
   );
 }
 
-// ----------------------------------------------------------------- Compiling
-
-const COMPILE_STEPS = ["Reading your sentence", "Proposing search queries", "Drafting the script and its output schema"];
-
-function CompilingPanel({ workspace }: { workspace: WorkspaceView }) {
-  const now = useNow();
-  const started = Date.parse(workspace.createdAt);
-  const total = Math.max(1000, Date.parse(workspace.compileReadyAt) - started);
-  const elapsed = now === 0 ? 0 : Math.min(total, Math.max(0, now - started));
-  const current = Math.min(COMPILE_STEPS.length - 1, Math.floor((elapsed / total) * COMPILE_STEPS.length));
-
-  return (
-    <Card aria-live="polite">
-      <CardHeader title="Compiling" description="This takes a few seconds. The page updates by itself when the queries are ready." />
-      <CardBody className="flex flex-col gap-4">
-        <div className="h-1.5 overflow-hidden rounded-full bg-surface-2" role="progressbar" aria-label="Compiling" aria-valuetext={COMPILE_STEPS[current]}>
-          {now === 0 ? null : (
-            <div
-              className="h-full origin-left rounded-full bg-[var(--blue-dot)]"
-              style={{ animation: `grow ${total}ms linear both`, animationDelay: `-${elapsed}ms` }}
-            />
-          )}
-        </div>
-        <ol className="flex flex-col gap-2">
-          {COMPILE_STEPS.map((step, index) => (
-            <li key={step} className={cn("flex items-center gap-2.5 text-sm", index > current ? "text-ink-3" : "text-ink")}>
-              <span className="flex size-4 items-center justify-center" aria-hidden>
-                {index < current ? (
-                  <Check className="size-4 text-[var(--green-fg)]" />
-                ) : index === current ? (
-                  <LoaderCircle className="size-4 animate-spin text-[var(--blue-fg)]" />
-                ) : (
-                  <span className="size-1.5 rounded-full bg-line-strong" />
-                )}
-              </span>
-              {step}
-            </li>
-          ))}
-        </ol>
-      </CardBody>
-    </Card>
-  );
+function Stream() {
+  const { status } = useEventStream();
+  return <StreamBadge status={status} />;
 }
 
-// ------------------------------------------------------------------ Approval
+// --------------------------------------------------------------------- Build
 
-interface DraftQuery {
-  key: string;
-  text: string;
-}
+const STEPS: { phase: BuildPhase; label: string; detail: string }[] = [
+  { phase: "search", label: "Search", detail: "Find real pages about the sentence" },
+  { phase: "fetch", label: "Fetch", detail: "Read candidates and keep one as the sample" },
+  { phase: "write", label: "Write", detail: "A builder agent writes process.py" },
+  { phase: "verify", label: "Check", detail: "Run the script on the sample page" },
+];
 
-function ApprovalForm({ workspace, onApproved }: { workspace: WorkspaceView; onApproved: () => Promise<void> }) {
-  const [queries, setQueries] = useState<DraftQuery[]>(() =>
-    workspace.queries.map((query) => ({ key: query.id, text: query.text })),
-  );
-  const [frequency, setFrequency] = useState<Frequency>(workspace.frequency);
-  const [added, setAdded] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const cleaned = queries.map((query) => query.text.trim()).filter(Boolean);
-
-  const addQuery = () => {
-    const key = `new_${crypto.randomUUID()}`;
-    setQueries((list) => [...list, { key, text: "" }]);
-    setAdded(key);
-  };
-
-  const approve = async () => {
-    if (cleaned.length === 0) return;
-    setBusy(true);
-    setError(null);
-    try {
-      if (frequency !== workspace.frequency) await updateWorkspace(workspace.id, { frequency });
-      await approveWorkspace(workspace.id, { queries: cleaned });
-      await onApproved();
-    } catch (caught) {
-      setError(errorMessage(caught));
-      setBusy(false);
+/** How far the build has got, from the newest build event for the workspace. */
+function useBuildProgress(workspaceId: string): { index: number; repairing: boolean } {
+  const { events } = useEventStream();
+  return useMemo(() => {
+    let furthest = -1;
+    let repairing = false;
+    for (const { event } of events) {
+      if (event.workspace !== workspaceId || event.type !== "build") continue;
+      furthest = Math.max(furthest, BUILD_ORDER.indexOf(event.phase));
+      if (event.phase === "repair") repairing = true;
     }
-  };
-
-  return (
-    <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-      <Card>
-        <CardHeader
-          title="Review the proposed queries"
-          description="These are the searches Telem will run for you. Edit, remove or add until they say what you mean."
-        />
-        <CardBody className="flex flex-col gap-5">
-          <fieldset disabled={busy} className="flex min-w-0 flex-col gap-2">
-            <legend className="sr-only">Search queries</legend>
-            <ol className="flex flex-col gap-2">
-              {queries.map((query, index) => (
-                <li key={query.key} className="flex animate-enter items-center gap-2">
-                  <span className="w-5 shrink-0 text-right text-xs text-ink-3 tabular-nums" aria-hidden>
-                    {index + 1}
-                  </span>
-                  <Input
-                    value={query.text}
-                    onChange={(event) =>
-                      setQueries((list) =>
-                        list.map((item) => (item.key === query.key ? { ...item, text: event.target.value } : item)),
-                      )
-                    }
-                    aria-label={`Query ${index + 1}`}
-                    placeholder="A search query"
-                    maxLength={200}
-                    autoFocus={query.key === added}
-                  />
-                  <IconButton
-                    label={`Remove query ${index + 1}`}
-                    onClick={() => setQueries((list) => list.filter((item) => item.key !== query.key))}
-                  >
-                    <X className="size-4" aria-hidden />
-                  </IconButton>
-                </li>
-              ))}
-            </ol>
-            {queries.length === 0 ? (
-              <p className="rounded-lg border border-dashed border-line-strong px-3.5 py-3 text-[13px] text-ink-3">
-                No queries. Add at least one to approve.
-              </p>
-            ) : null}
-            <div className="pl-7">
-              <Button size="sm" icon={<Plus className="size-4" aria-hidden />} onClick={addQuery} disabled={queries.length >= 10}>
-                Add query
-              </Button>
-            </div>
-          </fieldset>
-
-          <FrequencyPicker value={frequency} onChange={setFrequency} disabled={busy} />
-
-          {error ? <Notice tone="red">{error}</Notice> : null}
-
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
-            <p className="max-w-md text-[13px] text-ink-3">
-              Approving compiles the processing script. Queries and frequency can&rsquo;t be changed afterwards.
-            </p>
-            <Button variant="primary" onClick={approve} loading={busy} disabled={cleaned.length === 0}>
-              Approve {plural(cleaned.length, "query", "queries")}
-            </Button>
-          </div>
-        </CardBody>
-      </Card>
-
-      <SchemaCard workspace={workspace} />
-    </div>
-  );
+    // BUILD_ORDER: search, searched, fetch, write, verify, repair, ready.
+    const index = furthest < 0 ? 0 : furthest <= 1 ? (furthest === 1 ? 1 : 0) : furthest === 2 ? 1 : furthest === 3 ? 2 : 3;
+    return { index, repairing };
+  }, [events, workspaceId]);
 }
 
-function FrequencyPicker({
-  value,
-  onChange,
-  disabled,
-}: {
-  value: Frequency;
-  onChange: (next: Frequency) => void;
-  disabled?: boolean;
-}) {
-  const name = useId();
-  return (
-    <fieldset disabled={disabled} className="flex min-w-0 flex-col gap-1.5">
-      <legend className="mb-1.5 text-[13px] font-medium text-ink">How often to check</legend>
-      <div className="flex w-fit max-w-full flex-wrap gap-1 rounded-xl border border-line bg-surface-2 p-1">
-        {FREQUENCIES.map((frequency) => (
-          <label
-            key={frequency}
-            className={cn(
-              "cursor-pointer rounded-lg px-3 py-1.5 text-[13px] font-medium whitespace-nowrap transition-colors",
-              "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus",
-              value === frequency ? "bg-surface text-ink shadow-card" : "text-ink-2 hover:text-ink",
-            )}
-          >
-            <input
-              type="radio"
-              name={name}
-              value={frequency}
-              checked={value === frequency}
-              onChange={() => onChange(frequency)}
-              className="sr-only"
-            />
-            {frequencyLabel(frequency)}
-          </label>
-        ))}
-      </div>
-    </fieldset>
-  );
-}
-
-function SchemaCard({ workspace }: { workspace: WorkspaceView }) {
+function BuildPanel({ workspaceId }: { workspaceId: string }) {
+  const { index, repairing } = useBuildProgress(workspaceId);
   return (
     <Card>
-      <CardHeader title="Output schema" description="What the script will extract from each page. Set by the compiler." />
-      <CardBody className="flex flex-col gap-4">
-        <SchemaTable schema={workspace.extractionSchema} />
-        <div>
-          <p className="mb-1.5 text-xs text-ink-3">Search engines used when something changes</p>
-          <ul className="flex flex-wrap gap-1.5">
-            {workspace.escalationProviders.map((provider) => (
-              <li key={provider} className="rounded-md border border-line-strong px-2 py-0.5 font-mono text-xs text-ink-2">
-                {provider}
-              </li>
-            ))}
-          </ul>
-        </div>
+      <CardHeader
+        title="Building the script"
+        description="This usually takes one to three minutes. You can leave the page; the build carries on."
+        actions={<Stream />}
+      />
+      <ol className="grid gap-px border-y border-line bg-line sm:grid-cols-4">
+        {STEPS.map((step, position) => {
+          const state = position < index ? "done" : position === index ? "now" : "next";
+          return (
+            <li key={step.phase} data-tone={state === "next" ? "grey" : state === "done" ? "green" : "blue"} className="flex gap-3 bg-surface px-5 py-3.5">
+              <span
+                className={cn(
+                  "mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border text-tone-fg [&>svg]:size-3",
+                  state === "next" ? "border-line-strong" : "border-tone-line bg-tone-bg",
+                )}
+                aria-hidden
+              >
+                {state === "done" ? <Check /> : state === "now" ? <LoaderCircle className="animate-spin" /> : null}
+              </span>
+              <div className="min-w-0">
+                <p className={cn("text-sm font-medium", state === "next" ? "text-ink-3" : "text-ink")}>
+                  {step.label}
+                  <span className="sr-only">{state === "done" ? " (done)" : state === "now" ? " (in progress)" : " (not started)"}</span>
+                </p>
+                <p className="text-xs text-ink-3">
+                  {step.phase === "verify" && repairing ? "The check failed once; the agent is repairing the script" : step.detail}
+                </p>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+      <LiveFeed workspaceId={workspaceId} maxHeight="20rem" empty="Waiting for the runtime's first step." />
+    </Card>
+  );
+}
+
+// ------------------------------------------------------------------- Summary
+
+function Summary({ workspace }: { workspace: Workspace }) {
+  const check = workspace.buildCheck;
+  return (
+    <Card>
+      <CardHeader title="Workspace" />
+      <CardBody>
+        <DetailList
+          items={[
+            { label: "Id", value: <Mono>{workspace.id}</Mono> },
+            { label: "Created", value: workspace.createdAt ? formatDateTime(workspace.createdAt) : "—" },
+            { label: "Built", value: workspace.builtAt ? formatDateTime(workspace.builtAt) : "Not yet" },
+            {
+              label: "Script",
+              value: workspace.scriptStatus ? <ScriptStatusBadge status={workspace.scriptStatus} /> : "None",
+            },
+            {
+              label: "Sample page",
+              value: workspace.sampleUrl ? (
+                <a href={workspace.sampleUrl} target="_blank" rel="noreferrer noopener" className={link}>
+                  {shortUrl(workspace.sampleUrl)}
+                </a>
+              ) : (
+                "—"
+              ),
+            },
+            {
+              label: "Build check",
+              value: check ? (
+                <StatusPill variant="plain" tone={check.ok ? "green" : "red"} label={check.ok ? "Passed" : "Failed"} />
+              ) : (
+                "—"
+              ),
+            },
+            { label: "Telem monitor", value: workspace.monitorId ? <Mono>{workspace.monitorId}</Mono> : "None yet" },
+            { label: "Pages run / results recorded", value: `${workspace.pagesSeen} / ${workspace.resultsHandled}` },
+          ]}
+        />
       </CardBody>
     </Card>
   );
 }
 
-// --------------------------------------------------------------------- Ready
+// -------------------------------------------------------------------- Output
 
-function ReadyPanel({ workspace, script }: { workspace: WorkspaceView; script: ScriptView | null }) {
+function OutputSection({ workspaceId }: { workspaceId: string }) {
+  const fetcher = useCallback(() => getWorkspaceOutput(workspaceId), [workspaceId]);
+  const { data, error } = usePoll(fetcher, 5000);
+
+  if (!data) {
+    return <Card>{error ? <ErrorState error={error} what="this workspace's results" /> : <ListSkeleton rows={3} />}</Card>;
+  }
+  if (!data.available) {
+    return (
+      <Notice tone="amber" title="The output service is not reachable">
+        Alerts and the research document live there, so they cannot be shown. Start it with{" "}
+        <code className="font-mono text-xs">python -m output_integration.server</code>.
+      </Notice>
+    );
+  }
   return (
     <>
-      {script?.status === "developed" ? (
-        <Notice title="Next step: deploy the script">
-          The script for this workspace is compiled but has never been deployed, so nothing is being processed yet.{" "}
-          <Link href={`/scripts/${script.id}`} className="font-medium text-ink underline underline-offset-4">
-            Open the script to deploy it
-          </Link>
-          .
-        </Notice>
-      ) : null}
-
-      <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-        <div className="flex flex-col gap-6">
-          <Card>
-            <CardHeader title="Script" description="Compiled from this workspace when its queries were approved." />
-            <CardBody>
-              {script ? (
-                <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 rounded-lg border border-line px-3.5 py-3">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-                      <span className="text-sm font-medium text-ink">{script.name}</span>
-                      <span className="font-mono text-xs text-ink-3">v{script.version}</span>
-                      <ScriptStatusBadge status={script.status} />
-                    </div>
-                    <div className="mt-1.5">
-                      <ScriptActivityBadge activity={script.activity} />
-                    </div>
-                  </div>
-                  <LinkButton href={`/scripts/${script.id}`} size="sm">
-                    Open script
-                    <ArrowRight className="size-4" aria-hidden />
-                  </LinkButton>
-                </div>
-              ) : (
-                <p className="text-[13px] text-ink-3">The script for this workspace couldn&rsquo;t be loaded.</p>
-              )}
-            </CardBody>
-          </Card>
-
-          <Card>
-            <CardHeader
-              title="Queries"
-              description={`${frequencyLabel(workspace.frequency)}. Approved ${workspace.approvedAt ? formatDateTime(workspace.approvedAt) : ""}.`}
-            />
-            <CardBody>
-              <ol className="divide-y divide-line rounded-lg border border-line">
-                {workspace.queries.map((query, index) => (
-                  <li key={query.id} className="flex items-baseline gap-3 px-3.5 py-2.5 text-sm">
-                    <span className="w-4 shrink-0 text-right text-xs text-ink-3 tabular-nums" aria-hidden>
-                      {index + 1}
-                    </span>
-                    <span className="min-w-0 break-words text-ink">{query.text}</span>
-                  </li>
-                ))}
-              </ol>
-            </CardBody>
-          </Card>
-        </div>
-
-        <SchemaCard workspace={workspace} />
-      </div>
+      <StatsRow output={data} />
+      <AlertsCard alerts={data.alerts} />
+      <Card>
+        <CardHeader title="Research document" description="The living document the output service keeps for this workspace." />
+        {data.doc.trim() ? (
+          <CardBody>
+            <Markdown source={data.doc} />
+          </CardBody>
+        ) : (
+          <div className="border-t border-line">
+            <EmptyState icon={<FileText aria-hidden />} title="Nothing written yet" compact>
+              Entries are added as results are delivered.
+            </EmptyState>
+          </div>
+        )}
+      </Card>
     </>
+  );
+}
+
+function StatsRow({ output }: { output: WorkspaceOutput }) {
+  const stats = output.stats;
+  if (!stats) return null;
+  const tiles = [
+    { label: "Results received", value: stats.received },
+    { label: "Alerts sent", value: stats.delivered },
+    { label: "Held back", value: stats.suppressed },
+    { label: "Document entries", value: stats.docEntries },
+  ];
+  return (
+    <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      {tiles.map((tile) => (
+        <div key={tile.label} className="rounded-xl border border-line bg-surface px-5 py-4 shadow-card">
+          <dt className="text-xs text-ink-3">{tile.label}</dt>
+          <dd className="mt-1 text-2xl font-semibold tracking-tight text-ink tabular-nums">{tile.value.toLocaleString("en-US")}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function AlertsCard({ alerts }: { alerts: Alert[] }) {
+  return (
+    <Card>
+      <CardHeader
+        title="Alerts"
+        description="Every result the output service received, newest first. Some are held back: duplicates, low impact, low confidence."
+      />
+      <div className="border-t border-line">
+        {alerts.length === 0 ? (
+          <EmptyState icon={<Inbox aria-hidden />} title="No results yet" compact>
+            Results appear here once the script has run a page and the delivery agent has sent it on.
+          </EmptyState>
+        ) : (
+          <ul className="max-h-[34rem] overflow-y-auto">
+            {alerts.map((alert) => (
+              <ExpanderRow
+                key={alert.seq}
+                summary={
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+                    <span className="w-[5.5rem] shrink-0">
+                      <StatusPill tone={alert.delivered ? "green" : "grey"} label={alert.delivered ? "Sent" : "Held back"} />
+                    </span>
+                    <span className="w-20 shrink-0">
+                      <ImpactBadge impact={alert.impact} />
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-sm text-ink">
+                      {alert.eventType ? <span className="font-medium">{alert.eventType}: </span> : null}
+                      <span className="text-ink-2">{alert.summary}</span>
+                    </span>
+                    <span className="ml-auto shrink-0 text-xs text-ink-3 tabular-nums">
+                      {alert.at ? <RelativeTime iso={alert.at} /> : `#${alert.seq}`}
+                    </span>
+                  </div>
+                }
+              >
+                {() => (
+                  <div className="flex flex-col gap-3">
+                    <p className="text-sm text-ink">{alert.summary}</p>
+                    {!alert.delivered && alert.reason ? <p className="text-[13px] text-ink-3">Held back: {alert.reason}</p> : null}
+                    <DetailList
+                      items={[
+                        { label: "Sequence", value: <Mono>{alert.seq}</Mono> },
+                        { label: "Received", value: alert.at ? formatDateTime(alert.at) : "—" },
+                        { label: "Confidence", value: formatPercent(alert.confidence) },
+                        {
+                          label: "Source",
+                          value: alert.sourceUrl ? (
+                            <a href={alert.sourceUrl} target="_blank" rel="noreferrer noopener" className={link}>
+                              {shortUrl(alert.sourceUrl)}
+                            </a>
+                          ) : (
+                            "—"
+                          ),
+                        },
+                      ]}
+                    />
+                  </div>
+                )}
+              </ExpanderRow>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+// -------------------------------------------------------------------- Memory
+
+function MemoryCard({ workspace }: { workspace: Workspace }) {
+  // A fresh memory.md holds only its title line.
+  const hasNotes = workspace.memory.split("\n").filter((line) => line.trim()).length > 1;
+  return (
+    <Card>
+      <CardHeader title="Memory" description="What the delivery agent has written down about this workspace (memory.md)." />
+      {hasNotes ? (
+        <CardBody>
+          <Markdown source={workspace.memory} />
+        </CardBody>
+      ) : (
+        <div className="border-t border-line">
+          <EmptyState icon={<FileText aria-hidden />} title="Nothing recorded yet" compact>
+            The delivery agent adds a note each time it handles a result.
+          </EmptyState>
+        </div>
+      )}
+    </Card>
   );
 }

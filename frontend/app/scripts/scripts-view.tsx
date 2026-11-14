@@ -111,14 +111,13 @@ function ScriptsTable({ scripts }: { scripts: ScriptView[] }) {
               <Link href={`/scripts/${script.id}`} className="font-medium text-ink after:absolute after:inset-0">
                 {script.name}
               </Link>
-              <span className="ml-2 font-mono text-xs text-ink-3">v{script.version}</span>
             </Td>
             <Td>
               <Link
                 href={`/workspaces/${script.workspaceId}`}
                 className="relative z-10 text-ink-2 underline decoration-line-strong underline-offset-4 hover:text-ink"
               >
-                {script.workspaceName}
+                {script.workspaceId}
               </Link>
             </Td>
             <Td>

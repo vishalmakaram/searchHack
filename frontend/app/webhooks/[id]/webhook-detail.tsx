@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { Eye, EyeOff, Inbox, Pencil, Send, Trash2 } from "lucide-react";
+import { Inbox, Send, Trash2 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import {
   deleteWebhook,
@@ -20,12 +20,12 @@ import { DeliveryList } from "@/components/deliveries/delivery-list";
 import { PageBody, PageHeader } from "@/components/shell/page";
 import { EnabledBadge } from "@/components/status/badges";
 import { Notice } from "@/components/status/notice";
-import { Button, IconButton } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { CodeBlock } from "@/components/ui/code-block";
 import { CopyButton } from "@/components/ui/copy-button";
 import { ConfirmDialog } from "@/components/ui/dialog";
-import { RenameDialog } from "@/components/ui/rename-dialog";
+import { Input } from "@/components/ui/field";
 import { PageSkeleton } from "@/components/ui/skeleton";
 import { EmptyState, ErrorState, NotFoundState, StaleBanner } from "@/components/ui/states";
 import { Switch } from "@/components/ui/switch";
@@ -44,7 +44,6 @@ export function WebhookDetail() {
   }, [id]);
   const { data, error, refresh } = usePoll(fetcher);
 
-  const [renaming, setRenaming] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ delivery: Delivery } | { error: string } | null>(null);
@@ -75,10 +74,13 @@ export function WebhookDetail() {
   const { webhook, deliveries, scripts } = data;
 
   const sendTest = async () => {
+    // The test event names one page; the routed scripts run on it for real.
+    const url = window.prompt("Which page should the test event name?", "https://example.com/");
+    if (url === null || url.trim() === "") return;
     setTesting(true);
     setTestResult(null);
     try {
-      const delivery = await sendTestEvent(webhook.id);
+      const delivery = await sendTestEvent(webhook.id, url.trim());
       setTestResult({ delivery });
       await refresh();
     } catch (caught) {
@@ -92,14 +94,7 @@ export function WebhookDetail() {
     <PageBody>
       <PageHeader
         back={BACK}
-        title={
-          <span className="inline-flex items-center gap-1.5">
-            {webhook.name}
-            <IconButton label="Rename webhook" onClick={() => setRenaming(true)}>
-              <Pencil className="size-4" aria-hidden />
-            </IconButton>
-          </span>
-        }
+        title={webhook.name}
         badges={<EnabledBadge enabled={webhook.enabled} />}
         actions={
           <>
@@ -141,16 +136,6 @@ export function WebhookDetail() {
         </div>
       </Card>
 
-      <RenameDialog
-        open={renaming}
-        onClose={() => setRenaming(false)}
-        title="Rename webhook"
-        initial={webhook.name}
-        onSave={async (name) => {
-          await updateWebhook(webhook.id, { name });
-          await refresh();
-        }}
-      />
       <ConfirmDialog
         open={deleting}
         onClose={() => setDeleting(false)}
@@ -194,7 +179,7 @@ function TestResult({ result }: { result: { delivery: Delivery } | { error: stri
 }
 
 function EndpointCard({ webhook, onChanged }: { webhook: WebhookView; onChanged: () => Promise<void> }) {
-  const [revealed, setRevealed] = useState(false);
+  const [secretDraft, setSecretDraft] = useState("");
   const [toggling, setToggling] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -203,6 +188,20 @@ function EndpointCard({ webhook, onChanged }: { webhook: WebhookView; onChanged:
     setError(null);
     try {
       await updateWebhook(webhook.id, { enabled });
+      await onChanged();
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setToggling(false);
+    }
+  };
+
+  const saveSecret = async (secret: string | null) => {
+    setToggling(true);
+    setError(null);
+    try {
+      await updateWebhook(webhook.id, { secret });
+      setSecretDraft("");
       await onChanged();
     } catch (caught) {
       setError(errorMessage(caught));
@@ -234,18 +233,36 @@ function EndpointCard({ webhook, onChanged }: { webhook: WebhookView; onChanged:
         </div>
 
         <div>
-          <p className="mb-1.5 text-xs text-ink-3">Secret</p>
-          <div className="flex items-center gap-1 rounded-lg border border-line bg-surface-2 py-0.5 pr-1 pl-3">
-            <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-ink">
-              {revealed ? webhook.secret : "•".repeat(28)}
-            </span>
-            <IconButton label={revealed ? "Hide secret" : "Reveal secret"} onClick={() => setRevealed((value) => !value)}>
-              {revealed ? <EyeOff className="size-4" aria-hidden /> : <Eye className="size-4" aria-hidden />}
-            </IconButton>
-            <CopyButton value={webhook.secret} what="secret" />
-          </div>
+          <p className="mb-1.5 text-xs text-ink-3">Signing secret</p>
+          <form
+            className="flex items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (secretDraft.trim() !== "") void saveSecret(secretDraft.trim());
+            }}
+          >
+            <Input
+              type="password"
+              autoComplete="off"
+              value={secretDraft}
+              onChange={(event) => setSecretDraft(event.target.value)}
+              placeholder={webhook.secretSet ? "Saved. Paste a new one to replace it" : "Paste the secret Telem issued"}
+              aria-label="Signing secret"
+              className="min-w-0 flex-1"
+            />
+            <Button type="submit" disabled={toggling || secretDraft.trim() === ""}>
+              Save
+            </Button>
+            {webhook.secretSet ? (
+              <Button type="button" disabled={toggling} onClick={() => void saveSecret(null)}>
+                Remove
+              </Button>
+            ) : null}
+          </form>
           <p className="mt-1.5 text-xs text-ink-3">
-            Signatures are not checked yet, so deliveries are accepted without it and marked &ldquo;Not checked&rdquo;.
+            {webhook.secretSet
+              ? "Deliveries with a Telem-Signature header are checked against it and marked Valid or Invalid."
+              : "No secret saved, so signatures are not checked and deliveries are marked “Not checked”."}
           </p>
         </div>
 

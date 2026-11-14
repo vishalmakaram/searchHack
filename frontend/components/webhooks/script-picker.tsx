@@ -52,10 +52,9 @@ export function ScriptPicker({ scripts, selected, onChange, label, disabled }: S
                 <span className="min-w-0 flex-1">
                   <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
                     <span className="text-sm font-medium text-ink">{script.name}</span>
-                    <span className="font-mono text-xs text-ink-3">v{script.version}</span>
                     <ScriptStatusBadge status={script.status} />
                   </span>
-                  <span className="mt-0.5 block text-xs text-ink-3">{script.workspaceName}</span>
+                  <span className="mt-0.5 block font-mono text-xs text-ink-3">{script.id}</span>
                   {checked && script.status !== "active" ? (
                     <span data-tone="amber" className="mt-1 block text-xs font-medium text-tone-fg">
                       Not active: events routed here are skipped until it is{" "}

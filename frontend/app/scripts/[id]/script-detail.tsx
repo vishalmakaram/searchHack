@@ -18,7 +18,6 @@ import { CodeBlock } from "@/components/ui/code-block";
 import { DetailList } from "@/components/ui/detail-list";
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { RelativeTime } from "@/components/ui/relative-time";
-import { SchemaTable } from "@/components/ui/schema-table";
 import { PageSkeleton } from "@/components/ui/skeleton";
 import { EmptyState, ErrorState, NotFoundState, StaleBanner } from "@/components/ui/states";
 
@@ -99,11 +98,10 @@ export function ScriptDetail() {
         title={script.name}
         badges={
           <>
-            <span className="rounded-md border border-line-strong px-1.5 py-px font-mono text-xs text-ink-2">v{script.version}</span>
             <ScriptStatusBadge status={script.status} />
           </>
         }
-        description={script.description}
+        description={script.query}
         actions={
           <Button variant={action.variant} icon={action.icon} onClick={() => setConfirming(true)}>
             {action.label}
@@ -141,17 +139,48 @@ export function ScriptDetail() {
 
       <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Card>
-          <CardHeader title="Source" description="Compiled by the agent. Read-only." />
+          <CardHeader title="Source" description="process.py, written by the builder agent. Read-only." />
           <CardBody>
-            <CodeBlock code={script.source} label={`${script.name} · v${script.version}`} what="script source" lineNumbers />
+            {script.source !== null ? (
+              <CodeBlock code={script.source} label={`${script.name} · process.py`} what="script source" lineNumbers />
+            ) : (
+              <p className="text-[13px] text-ink-3">process.py could not be read from the workspace folder.</p>
+            )}
           </CardBody>
         </Card>
 
         <div className="flex flex-col gap-6">
           <Card>
-            <CardHeader title="Output schema" description="A run only succeeds if its output has this shape." />
+            <CardHeader title="Build check" description="The new script run once against a real sample page." />
             <CardBody>
-              <SchemaTable schema={script.extractionSchema} />
+              {script.buildCheck ? (
+                <div className="flex flex-col gap-3">
+                  <p className="text-sm text-ink">
+                    {script.buildCheck.ok ? "Passed" : "Failed"}
+                    {script.buildCheck.durationMs !== null ? ` in ${(script.buildCheck.durationMs / 1000).toFixed(1)} s` : ""}
+                    {script.buildCheck.error ? `: ${script.buildCheck.error}` : ""}
+                  </p>
+                  {script.sampleUrl ? (
+                    <a
+                      href={script.sampleUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="truncate text-[13px] text-ink-2 underline decoration-line-strong underline-offset-4"
+                    >
+                      {script.sampleUrl}
+                    </a>
+                  ) : null}
+                  {script.buildCheck.output !== null && script.buildCheck.output !== undefined ? (
+                    <CodeBlock
+                      code={JSON.stringify(script.buildCheck.output, null, 2)}
+                      label="Output on the sample page"
+                      what="build check output"
+                    />
+                  ) : null}
+                </div>
+              ) : (
+                <p className="text-[13px] text-ink-3">No build check was recorded for this script.</p>
+              )}
             </CardBody>
           </Card>
 
@@ -229,11 +258,11 @@ function stateItems(script: ScriptView) {
       label: "Workspace",
       value: (
         <Link href={`/workspaces/${script.workspaceId}`} className="underline decoration-line-strong underline-offset-4 hover:decoration-ink">
-          {script.workspaceName}
+          {script.workspaceId}
         </Link>
       ),
     },
-    { label: "Compiled", value: formatDateTime(script.createdAt) },
+    { label: "Built", value: script.builtAt ? formatDateTime(script.builtAt) : "—" },
     { label: "First deployed", value: script.deployedAt ? formatDateTime(script.deployedAt) : "Never" },
   ];
 }

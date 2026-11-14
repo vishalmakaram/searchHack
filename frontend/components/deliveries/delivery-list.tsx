@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback } from "react";
 import { listRuns } from "@/lib/api";
 import type { Delivery } from "@/lib/types";
-import { formatBytes, formatDateTime, plural, prettyJson } from "@/lib/format";
+import { formatBytes, formatDateTime, plural, prettyJson, shortUrl } from "@/lib/format";
 import { usePoll } from "@/lib/use-poll";
 import { RunStatusBadge, SignatureBadge } from "@/components/status/badges";
 import { Notice } from "@/components/status/notice";
@@ -146,7 +146,7 @@ function DeliveryRuns({ deliveryId, expected }: { deliveryId: string; expected: 
                 <Link href={`/scripts/${run.scriptId}`} className="text-sm font-medium text-ink underline decoration-line-strong underline-offset-4">
                   {run.scriptName}
                 </Link>
-                <Mono>seq {run.event.seq}</Mono>
+                {run.url ? <Mono className="min-w-0 truncate">{shortUrl(run.url)}</Mono> : null}
               </li>
             ))}
           </ul>

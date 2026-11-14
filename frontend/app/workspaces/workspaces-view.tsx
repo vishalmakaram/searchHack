@@ -4,10 +4,9 @@ import Link from "next/link";
 import { Plus, Telescope } from "lucide-react";
 import { listWorkspaces } from "@/lib/api";
 import type { WorkspaceView } from "@/lib/types";
-import { frequencyLabel } from "@/lib/format";
 import { usePoll } from "@/lib/use-poll";
 import { PageBody, PageHeader } from "@/components/shell/page";
-import { WorkspaceStatusBadge } from "@/components/status/badges";
+import { ScriptStatusBadge, WorkspaceStatusBadge } from "@/components/status/badges";
 import { LinkButton } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { RelativeTime } from "@/components/ui/relative-time";
@@ -28,7 +27,7 @@ export function WorkspacesView() {
     <PageBody>
       <PageHeader
         title="Workspaces"
-        description="A workspace is one thing you want watched: your sentence, the search queries for it, and the script compiled to read the results."
+        description="A workspace is one thing you want watched: your sentence, the script an agent wrote to read pages about it, and what it has found so far."
         actions={newButton}
       />
       <StaleBanner error={data ? error : null} />
@@ -58,8 +57,8 @@ function WorkspacesTable({ workspaces }: { workspaces: WorkspaceView[] }) {
         <tr>
           <Th>Workspace</Th>
           <Th>Status</Th>
-          <Th className="text-right">Queries</Th>
-          <Th>Checks</Th>
+          <Th>Script</Th>
+          <Th className="text-right">Pages run</Th>
           <Th className="text-right">Created</Th>
         </tr>
       </thead>
@@ -70,15 +69,15 @@ function WorkspacesTable({ workspaces }: { workspaces: WorkspaceView[] }) {
               <Link href={`/workspaces/${workspace.id}`} className="font-medium text-ink after:absolute after:inset-0">
                 {workspace.name}
               </Link>
-              <p className="mt-0.5 truncate text-[13px] text-ink-3">{workspace.intent}</p>
+              <p className="mt-0.5 truncate font-mono text-xs text-ink-3">{workspace.id}</p>
             </Td>
             <Td>
               <WorkspaceStatusBadge status={workspace.status} />
             </Td>
-            <Td className="text-right tabular-nums">{workspace.status === "compiling" ? "—" : workspace.queries.length}</Td>
-            <Td className="whitespace-nowrap text-ink-2">{frequencyLabel(workspace.frequency)}</Td>
+            <Td>{workspace.scriptStatus ? <ScriptStatusBadge status={workspace.scriptStatus} /> : <span className="text-ink-3">—</span>}</Td>
+            <Td className="text-right tabular-nums">{workspace.pagesSeen}</Td>
             <Td className="text-right whitespace-nowrap text-ink-2">
-              <RelativeTime iso={workspace.createdAt} />
+              {workspace.createdAt ? <RelativeTime iso={workspace.createdAt} /> : "—"}
             </Td>
           </Tr>
         ))}

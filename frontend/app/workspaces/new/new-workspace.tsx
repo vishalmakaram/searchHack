@@ -34,7 +34,7 @@ export function NewWorkspace() {
     setBusy(true);
     setError(null);
     try {
-      const workspace = await createWorkspace({ intent: trimmed });
+      const workspace = await createWorkspace({ query: trimmed });
       // This page stays mounted while hidden, so clear it for the next visit.
       setIntent("");
       setBusy(false);
@@ -50,7 +50,7 @@ export function NewWorkspace() {
       <PageHeader
         back={{ href: "/workspaces", label: "Workspaces" }}
         title="New workspace"
-        description="Say what you want watched, in one sentence. The compiler proposes search queries for you to review before anything runs."
+        description="Say what you want watched, in one sentence. The runtime searches for real pages about it and has an agent write a script that reads them. That takes a minute or two."
       />
       <Card className="max-w-3xl">
         <form onSubmit={submit} className="flex flex-col gap-4 p-5">
@@ -82,7 +82,7 @@ export function NewWorkspace() {
               disabled={!trimmed}
               className="ml-auto"
             >
-              Propose queries
+              Build workspace
               {busy ? null : <ArrowRight className="size-4" aria-hidden />}
             </Button>
           </div>

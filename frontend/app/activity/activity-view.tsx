@@ -59,7 +59,7 @@ export function ActivityView() {
             <option value="">All scripts</option>
             {scripts.data?.map((script) => (
               <option key={script.id} value={script.id}>
-                {script.name} (v{script.version}, {SCRIPT_STATUS[script.status].label.toLowerCase()})
+                {script.name} ({SCRIPT_STATUS[script.status].label.toLowerCase()})
               </option>
             ))}
             {scriptId && scripts.data && !knownScript ? <option value={scriptId}>Unknown script</option> : null}

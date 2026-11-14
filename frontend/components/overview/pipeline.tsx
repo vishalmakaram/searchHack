@@ -11,14 +11,14 @@ const STAGE_ICONS: Record<StageKey, ComponentType<SVGProps<SVGSVGElement>>> = {
   ingest: Inbox,
   dispatch: Split,
   processing: Cpu,
-  results: PackageCheck,
+  delivery: PackageCheck,
 };
 
 const STAGE_HINTS: Record<StageKey, string> = {
   ingest: "Webhooks receive deliveries from Telem",
-  dispatch: "Events are routed to scripts",
-  processing: "Scripts turn pages into results",
-  results: "Output is checked against the schema",
+  dispatch: "Events are routed to active scripts",
+  processing: "The runtime fetches each page and runs its script",
+  delivery: "An agent records the result and sends it on",
 };
 
 /** The pipeline as four connected stages, left to right (top to bottom on narrow screens). */
@@ -99,7 +99,7 @@ function Connector({ flowing }: { flowing: boolean }) {
 const HEADLINES: Record<Health, string> = {
   ok: "Everything is flowing. No failures in the last hour.",
   busy: "Work is passing through the pipeline right now.",
-  attention: "Something failed in the last hour. See the stages marked below.",
+  attention: "Something needs a look: a service is down, or a run failed in the last hour.",
   idle: "Nothing has arrived in the last hour.",
 };
 

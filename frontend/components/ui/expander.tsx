@@ -9,12 +9,10 @@ interface ExpanderRowProps {
   summary: ReactNode;
   /** Rendered only while open. */
   children: () => ReactNode;
-  /** What opening this row shows, for the accessible name: "run details". */
-  what: string;
 }
 
 /** A list row that opens to show more. Keeps its own open state. */
-export function ExpanderRow({ summary, children, what }: ExpanderRowProps) {
+export function ExpanderRow({ summary, children }: ExpanderRowProps) {
   const [open, setOpen] = useState(false);
   const panelId = useId();
   return (
@@ -23,7 +21,6 @@ export function ExpanderRow({ summary, children, what }: ExpanderRowProps) {
         type="button"
         aria-expanded={open}
         aria-controls={panelId}
-        aria-label={`${open ? "Hide" : "Show"} ${what}`}
         onClick={() => setOpen((value) => !value)}
         className={cn(
           "flex w-full items-center gap-3 px-5 py-3 text-left transition-colors hover:bg-surface-2/70",

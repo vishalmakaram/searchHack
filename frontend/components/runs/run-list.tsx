@@ -30,19 +30,18 @@ export function RunList({ runs, hideScript }: RunListProps) {
       {runs.map((run) => (
         <ExpanderRow
           key={run.id}
-          what={`details of the ${run.status} run for ${run.scriptName}`}
           summary={
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
               <span className="w-[6.75rem] shrink-0">
                 <RunStatusBadge status={run.status} />
               </span>
               {hideScript ? null : (
-                <span className="max-w-56 truncate text-sm font-medium text-ink">{run.scriptName}</span>
+                <span className="w-60 max-w-full truncate text-sm font-medium text-ink">{run.scriptName}</span>
               )}
               <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink-3">{shortUrl(run.event.url)}</span>
               <span className="ml-auto flex shrink-0 items-center gap-3 text-xs text-ink-3 tabular-nums">
-                {run.durationMs !== null ? <span>{formatDuration(run.durationMs)}</span> : null}
-                <RelativeTime iso={run.queuedAt} />
+                <span className="w-12 text-right">{run.durationMs !== null ? formatDuration(run.durationMs) : ""}</span>
+                <RelativeTime iso={run.queuedAt} className="w-[4.5rem] text-right" />
               </span>
             </div>
           }

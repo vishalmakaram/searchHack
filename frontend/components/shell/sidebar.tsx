@@ -33,7 +33,8 @@ export function Sidebar() {
           <ActiveNavLinks />
         </Suspense>
       </nav>
-      <div className="mt-auto hidden flex-col gap-2 px-2.5 md:flex">
+      {/* The bottom padding keeps this clear of the Next.js dev indicator in the corner. */}
+      <div className="mt-auto hidden flex-col gap-2 px-2.5 pb-12 md:flex">
         <p className="text-xs leading-relaxed text-ink-3">
           Mock runtime. Data is stored on this machine.
         </p>

@@ -8,7 +8,7 @@ import type { RunStatus } from "@/lib/types";
 import { usePoll } from "@/lib/use-poll";
 import { RunList } from "@/components/runs/run-list";
 import { PageBody, PageHeader } from "@/components/shell/page";
-import { RUN_STATUS } from "@/components/status/tones";
+import { RUN_STATUS, SCRIPT_STATUS } from "@/components/status/tones";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Select } from "@/components/ui/field";
@@ -59,7 +59,7 @@ export function ActivityView() {
             <option value="">All scripts</option>
             {scripts.data?.map((script) => (
               <option key={script.id} value={script.id}>
-                {script.name}
+                {script.name} (v{script.version}, {SCRIPT_STATUS[script.status].label.toLowerCase()})
               </option>
             ))}
             {scriptId && scripts.data && !knownScript ? <option value={scriptId}>Unknown script</option> : null}

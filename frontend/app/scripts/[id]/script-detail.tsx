@@ -209,6 +209,8 @@ export function ScriptDetail() {
         confirmLabel={action.confirmLabel}
         onConfirm={async () => {
           await action.run(script.id);
+          // Close first: once the new status lands, this dialog would describe the next action.
+          setConfirming(false);
           await refresh();
         }}
       />

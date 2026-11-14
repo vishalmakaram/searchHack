@@ -12,7 +12,7 @@ export interface TabItem {
 /** Tabs that are links, so the selected tab lives in the URL. */
 export function LinkTabs({ items, label }: { items: TabItem[]; label: string }) {
   return (
-    <nav aria-label={label} className="flex gap-1 overflow-x-auto rounded-xl border border-line bg-surface-2 p-1">
+    <nav aria-label={label} className="flex w-fit max-w-full gap-1 overflow-x-auto rounded-xl border border-line bg-surface-2 p-1">
       {items.map((item) => (
         <Link
           key={item.href}

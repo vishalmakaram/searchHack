@@ -36,7 +36,6 @@ export function DeliveryList({ deliveries, scriptNames, webhookNames }: Delivery
         return (
           <ExpanderRow
             key={delivery.id}
-            what={`delivery received ${formatDateTime(delivery.receivedAt)}`}
             summary={
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
                 {webhookNames ? (

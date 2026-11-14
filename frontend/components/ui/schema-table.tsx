@@ -7,13 +7,11 @@ export function SchemaTable({ schema }: { schema: Record<string, string> }) {
   return (
     <dl className="divide-y divide-line rounded-lg border border-line">
       {fields.map(([name, type]) => (
-        <div key={name} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 px-3.5 py-2">
+        <div key={name} className="px-3.5 py-2">
           <dt>
             <Mono className="text-ink">{name}</Mono>
           </dt>
-          <dd>
-            <Mono>{type}</Mono>
-          </dd>
+          <dd className="mt-0.5 text-[13px] text-ink-2">{type}</dd>
         </div>
       ))}
     </dl>

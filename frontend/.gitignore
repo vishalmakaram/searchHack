@@ -42,3 +42,7 @@ next-env.d.ts
 
 # local mock database
 /.data/
+
+# The repository root ignores every workspaces/* (runtime data). Our route folder is not that.
+!/app/workspaces/*
+!/app/api/workspaces/*

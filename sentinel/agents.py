@@ -52,7 +52,7 @@ def _assistant_text(message: dict) -> str:
 
 def run_pi(prompt: str, cwd, timeout: int = 480, tools: str | None = None,
            log: object | None = None, on_line=None, agent: str = "agent",
-           workspace: str | None = None) -> dict:
+           workspace: str | None = None, max_tools: int | None = None) -> dict:
     """Run `pi -p --mode json`, stream its activity to `events`, and stay killable.
 
     The json stream is what makes the frontend interesting: tool calls arrive as they
@@ -71,6 +71,8 @@ def run_pi(prompt: str, cwd, timeout: int = 480, tools: str | None = None,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
     )
     timed_out = {"hit": False}
+    over_budget = {"hit": False}
+    tool_calls = 0
 
     def stop() -> None:
         timed_out["hit"] = True
@@ -100,9 +102,17 @@ def run_pi(prompt: str, cwd, timeout: int = 480, tools: str | None = None,
 
             kind = event.get("type")
             if kind == "tool_execution_start":
-                call = {"tool": event.get("toolName"), "args": _short(event.get("args"))}
+                tool_calls += 1
+                call = {"tool": event.get("toolName"), "args": _short(event.get("args")),
+                        "n": tool_calls}
                 transcript.append(f"→ {call['tool']} {call['args']}")
                 events.emit("agent", agent=agent, workspace=workspace, **call)
+                if max_tools is not None and tool_calls > max_tools:
+                    # A prompt-level budget is advisory; this one is not.
+                    over_budget["hit"] = True
+                    events.emit("agent", agent=agent, workspace=workspace,
+                                line=f"tool budget of {max_tools} exceeded — stopping")
+                    proc.kill()
             elif kind == "message_end":
                 message = event.get("message") or {}
                 if message.get("role") == "assistant":
@@ -119,14 +129,17 @@ def run_pi(prompt: str, cwd, timeout: int = 480, tools: str | None = None,
         proc.wait()
         handle.close()
 
-    ok = proc.returncode == 0 and not timed_out["hit"]
+    ok = proc.returncode == 0 and not timed_out["hit"] and not over_budget["hit"]
     return {
         "ok": ok,
         "rc": proc.returncode,
         "stdout": final_text,
         "transcript": "\n".join(transcript),
-        "stderr": f"timed out after {timeout}s" if timed_out["hit"] else "",
+        "stderr": (f"timed out after {timeout}s" if timed_out["hit"]
+                   else f"exceeded {max_tools} tool calls" if over_budget["hit"] else ""),
         "duration_s": round(time.time() - started, 1),
+        "tool_calls": tool_calls,
+        "budget_exceeded": over_budget["hit"],
     }
 
 
@@ -159,6 +172,11 @@ Do this, in order:
    Fix and re-test until it does.
 4. Reply with one short paragraph: what you extract and how you decide keep=false.
 
+BUDGET: finish in 15-20 tool calls, and hard-stop at 24 — the harness kills the process there
+and discards your work. Read the two fixtures, write process.py once, run it once, and fix only
+what the error message actually says. No test harnesses, no scratch scripts, no `ls`/`grep`
+tours, no re-reading files you already read.
+
 Write no other files. Do not create a README. Do not install packages."""
 
 
@@ -170,7 +188,10 @@ Your process.py failed verification on the real fixture.
 
 Fix process.py in the current directory, test it with:
     python process.py < fixtures/page.sample.json
-and reply DONE only when it prints valid JSON with "processed". Write nothing else."""
+and reply DONE only when it prints valid JSON with "processed". Write nothing else.
+
+This is a repair, not a rewrite: at most 8 tool calls, and the harness kills you at 8. Change
+the smallest thing that fixes the error."""
 
 
 def build(ws: core.Workspace, query: str, tier: str = "max") -> dict:
@@ -207,10 +228,10 @@ def build(ws: core.Workspace, query: str, tier: str = "max") -> dict:
     events.emit("build", workspace=ws.id, phase="write", sample=page["url"],
                 content_length=page["content_length"])
     agent = run_pi(builder_prompt(query), ws.path, log=ws.logs / "builder.out",
-                   agent="builder", workspace=ws.id,
-                   on_line=None)
+                   agent="builder", workspace=ws.id, max_tools=24)
     ws.log("builder", agent["stdout"] + "\n--- stderr ---\n" + agent["stderr"])
-    result["steps"].append({"builder": agent["duration_s"], "builder_ok": agent["ok"]})
+    result["steps"].append({"builder": agent["duration_s"], "builder_ok": agent["ok"],
+                            "tool_calls": agent["tool_calls"]})
 
     events.emit("build", workspace=ws.id, phase="verify")
     check = ws.run_process(record)
@@ -220,7 +241,7 @@ def build(ws: core.Workspace, query: str, tier: str = "max") -> dict:
         events.emit("build", workspace=ws.id, phase="repair", error=err[:600])
         agent2 = run_pi(repair_prompt(err), ws.path, timeout=240,
                         log=ws.logs / "builder_repair.out",
-                        agent="builder", workspace=ws.id)
+                        agent="builder", workspace=ws.id, max_tools=8)
         ws.log("builder_repair_output", agent2["stdout"] + "\n" + agent2["stderr"])
         check = ws.run_process(record)
         result["steps"].append({"repair": agent2["duration_s"]})
@@ -349,7 +370,7 @@ def deliver(ws: core.Workspace, query: str, page: dict, output: dict,
     events.emit("delivery", workspace=ws.id, phase="start", url=page.get("url"),
                 integrations=bool(caps), service=(caps or {}).get("service"))
     agent = run_pi(worker_prompt(query, page, output, caps, ws.id, seq), ws.path,
-                   timeout=timeout, tools="bash,read,write,edit",
+                   timeout=timeout, tools="bash,read,write,edit", max_tools=14,
                    log=ws.logs / "worker.out", agent="worker", workspace=ws.id)
     ws.log("worker", agent["stdout"] + "\n--- stderr ---\n" + agent["stderr"])
     if agent["ok"]:

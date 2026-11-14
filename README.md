@@ -94,7 +94,10 @@ delivery agent.
 | `POST /workspaces/<id>/collect` | Creates a Telem monitor for the query and polls it; each page it has not seen before runs through the same pipeline. A monitor with no snapshot yet polls empty, so `collect` escalates to an `extended` search for the same query and reports `source: "escalation"` instead of "monitor" |
 | `GET /workspaces/<id>` | status, build steps, `memory.md` |
 
-Both agents run on `openrouter/deepseek/deepseek-v4.1-flash-1017` (override with `PI_MODEL`).
+Both agents run on `openrouter/deepseek/deepseek-v4.1-flash-1017` (override with `PI_MODEL`),
+under a hard tool-call budget the harness enforces by killing the process: the builder is asked
+to finish in 15-20 calls and is stopped at **24**, a repair pass at **8**, the worker at **14**.
+A killed agent fails verification, so the extractor is never left half-written silently.
 
 ### Setup
 

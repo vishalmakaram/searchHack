@@ -1,0 +1,62 @@
+[
+  {
+    "id": "pp-min-age",
+    "question": "What is the minimum age to get an FAA private pilot certificate for airplanes?",
+    "answer_terms": ["17 years"],
+    "note": "unverified - check 14 CFR 61.103(a)"
+  },
+  {
+    "id": "pp-flight-hours",
+    "question": "How many hours of flight time does the FAA require for a private pilot certificate (airplane single-engine)?",
+    "answer_terms": ["40 hours"],
+    "note": "unverified - check 14 CFR 61.109(a)"
+  },
+  {
+    "id": "part107-min-age",
+    "question": "How old do you have to be to get an FAA Part 107 remote pilot certificate?",
+    "answer_terms": ["16 years"],
+    "note": "unverified - check 14 CFR 107.61"
+  },
+  {
+    "id": "part107-max-altitude",
+    "question": "What is the maximum altitude for a small drone flown under FAA Part 107?",
+    "answer_terms": ["400 feet"],
+    "note": "unverified - check 14 CFR 107.51(b)"
+  },
+  {
+    "id": "part107-max-speed",
+    "question": "What is the maximum groundspeed for a small unmanned aircraft under FAA Part 107?",
+    "answer_terms": ["87 knots"],
+    "note": "unverified - check 14 CFR 107.51(a) (100 mph)"
+  },
+  {
+    "id": "drone-registration-weight",
+    "question": "Above what weight must a recreational drone be registered with the FAA?",
+    "answer_terms": ["250 grams"],
+    "note": "unverified - check faa.gov drone registration page (0.55 lbs)"
+  },
+  {
+    "id": "alcohol-rule",
+    "question": "What are the FAA alcohol limits for pilots before flying?",
+    "answer_terms": ["8 hours", "0.04"],
+    "note": "unverified - check 14 CFR 91.17(a)"
+  },
+  {
+    "id": "crew-oxygen",
+    "question": "When does the FAA require flight crew to use supplemental oxygen in an unpressurized aircraft?",
+    "answer_terms": ["12,500 feet", "30 minutes"],
+    "note": "unverified - check 14 CFR 91.211(a)(1)"
+  },
+  {
+    "id": "flight-review",
+    "question": "How often must a pilot complete an FAA flight review?",
+    "answer_terms": ["24 calendar months"],
+    "note": "unverified - check 14 CFR 61.56(c)"
+  },
+  {
+    "id": "vfr-fuel-reserve",
+    "question": "What are the FAA VFR fuel reserve requirements for airplanes during the day and at night?",
+    "answer_terms": ["30 minutes", "45 minutes"],
+    "note": "unverified - check 14 CFR 91.151(a)"
+  }
+]

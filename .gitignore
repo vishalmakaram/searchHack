@@ -1,8 +1,18 @@
-__pycache__/
-*.py[cod]
-*$py.class
+# Secrets: never commit API keys
 .env
+.env.*
+
+# Python
 .venv/
 env/
 venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Saved search responses (they cost credits to make, but stay local)
+cache/
+
+# System
 .DS_Store

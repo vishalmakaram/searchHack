@@ -12,3 +12,8 @@ cache/
 
 # macOS
 .DS_Store
+
+# vendored toolchain + runtime state
+bin/uv
+workspaces/
+.scratch/

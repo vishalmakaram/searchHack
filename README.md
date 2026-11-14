@@ -110,9 +110,16 @@ uv venv --python 3.14 && uv pip install -r requirements.txt
 
 ```bash
 PYTHONPATH=. .venv/bin/python -m sentinel.server          # :8000, dashboard at /
-.venv/bin/python tools/fake_integrations.py              # :4096 stub until the real proxy lands
+PYTHONPATH=. .venv/bin/python -m uvicorn output_integration.server:app \
+    --host 0.0.0.0 --port 4096                          # :4096 real output service
+.venv/bin/python tools/fake_integrations.py             # optional stub if 4096 is absent
 ./demo.sh "Telem AI changelog new features" https://docs.telem.ai/resources/changelog/
+
+cd frontend && npm ci && npx next dev -H 0.0.0.0 -p 3000   # :3000 control surface
 ```
+
+Full stack: **3000** frontend (Next, talks to 8000 and 4096 server-side, browser opens a
+WebSocket straight to 8000), **8000** runtime, **4096** output service — all bound to `0.0.0.0`.
 
 ### Live status over WebSocket
 

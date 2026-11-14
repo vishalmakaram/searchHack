@@ -1,5 +1,11 @@
 # Sentinel frontend — build plan
 
+> **Status, 14 Nov 2026.** The mock backend described below has been replaced. The app now drives the real
+> Sentinel runtime and output service at the repository root; see `README.md` for how it is wired and run.
+> Sections on the mock compiler, seeded data, query approval, and workspace rename and delete no longer apply.
+> The page structure, design rules, script statuses and the webhook receiver are as built.
+
+
 This is the working plan for the `frontend/` Next.js app. It is written for agents who have not seen any earlier conversation. Read sections 1–6 and 8 before writing code, then do only the work package you were assigned (section 9).
 
 ## 1. What we are building

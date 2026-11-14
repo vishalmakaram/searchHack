@@ -393,8 +393,9 @@ Sidebar navigation, in this order: **Overview, Workspaces, Scripts, Webhooks, Ac
 The work is split by layer, not by screen. The backend packages need no design judgement and go to separate agents. One frontend agent owns everything the user sees.
 
 ```
-Foundation (done) ──► BE1 ──► BE2 ──┐
-                 └──► FE ───────────┴──► INT
+Foundation (done) ──► BE1 ─┐
+                 ├──► BE2 ─┼──► INT
+                 └──► FE ──┘
 ```
 
 ### Foundation — done
@@ -410,7 +411,9 @@ git worktree add ../searchHack-be -b frontend-be frontend
 cd ../searchHack-be/frontend && npm ci
 ```
 
-Start the agent in `../searchHack-be/frontend` and tell it: "Read `PLAN.md`, then do BE1" (or BE2, or both in order). When it has committed, the frontend agent merges `frontend-be` into `frontend`. The paths do not overlap, so the merge is clean.
+Start each backend agent in `../searchHack-be/frontend` and tell it: "Read `PLAN.md`, then do BE1" (or BE2). When they have committed, the frontend agent merges `frontend-be` into `frontend`. The paths do not overlap, so the merge is clean.
+
+**BE1 and BE2 run at the same time, in that one worktree, as two agents.** They own different directories and meet at the signatures listed under BE1. Until BE1's modules exist, BE2's type check will report missing imports from `lib/server`; that is expected, and BE2 finishes its checks once BE1 has committed. Neither agent edits the other's files: if a signature is wrong or missing, say so in your report and work to the listed one.
 
 ### BE1 — Server core (backend agent)
 
@@ -418,26 +421,70 @@ Owns: `lib/server/**`, including its `*.test.ts` files. Nothing else.
 
 1. Write every module in 6.4, following the decisions in section 4.
 2. Write unit tests for: status transitions (legal and illegal), run status derived at different clock times, ingest (an `agent.changes` body, an unknown body, a duplicate `seq`, a non-active target), workspace status derivation, and the workspace-delete cascade.
-3. BE2 imports from these modules, so keep the public surface small and obvious. Suggested exports (say so in your report if you deviate):
+3. **Export exactly this surface.** BE2 is written at the same time by another agent, against these signatures, so they are fixed. Every function throws `DomainError` for 404 and 409 cases rather than returning `null`. Anything else you export is your own business.
 
-   | Module | Exports |
-   |---|---|
-   | `store.ts` | `read`, `mutate`, `reset` (wipe and reseed), type `Db` |
-   | `clock.ts` | `now`, `setNow` (tests only) |
-   | `ids.ts` | `newId(prefix)` |
-   | `errors.ts` | `DomainError` |
-   | `workspaces.ts` | `listWorkspaces`, `getWorkspace`, `createWorkspace`, `updateWorkspace`, `deleteWorkspace`, `approveWorkspace` |
-   | `scripts.ts` | `listScripts({ status? })`, `getScript`, `deployScript`, `deactivateScript`, `activateScript` |
-   | `runtime.ts` | `createRun`, `toRunView`, `listRuns({ scriptId?, status?, deliveryId?, limit? })`, `getRun` |
-   | `webhooks.ts` | `listWebhooks(baseUrl)`, `getWebhook(id, baseUrl)`, `createWebhook`, `updateWebhook`, `deleteWebhook`, `listDeliveries(webhookId, limit?)`, `sendTestEvent(id)` |
-   | `ingest.ts` | `receive` |
-   | `overview.ts` | `getOverview` |
+   ```ts
+   // store.ts
+   export interface Db { workspaces: Workspace[]; scripts: Script[]; webhooks: Webhook[]; deliveries: Delivery[]; runs: Run[] }
+   export function read(): Promise<Db>;
+   export function mutate<T>(fn: (db: Db) => T): Promise<T>;
+   export function reset(): Promise<void>;                      // wipe and reseed
+
+   // clock.ts
+   export function now(): Date;
+   export function setNow(date: Date | null): void;             // tests only; null restores the real clock
+
+   // ids.ts
+   export function newId(prefix: "ws" | "scr" | "wh" | "dlv" | "run" | "q"): string;
+
+   // errors.ts
+   export class DomainError extends Error {
+     readonly status: 400 | 403 | 404 | 409 | 413;
+     constructor(status: 400 | 403 | 404 | 409 | 413, message: string);
+   }
+
+   // workspaces.ts
+   export function listWorkspaces(): Promise<WorkspaceView[]>;  // newest first
+   export function getWorkspace(id: string): Promise<WorkspaceView>;
+   export function createWorkspace(input: CreateWorkspaceInput): Promise<WorkspaceView>;
+   export function updateWorkspace(id: string, input: UpdateWorkspaceInput): Promise<WorkspaceView>;
+   export function deleteWorkspace(id: string): Promise<void>;
+   export function approveWorkspace(id: string, input: ApproveWorkspaceInput): Promise<WorkspaceView>;
+
+   // scripts.ts
+   export function listScripts(filter?: { status?: ScriptStatus }): Promise<ScriptView[]>;
+   export function getScript(id: string): Promise<ScriptView>;
+   export function deployScript(id: string): Promise<ScriptView>;
+   export function deactivateScript(id: string): Promise<ScriptView>;
+   export function activateScript(id: string): Promise<ScriptView>;
+
+   // runtime.ts (createRun and toRunView are internal to lib/server; shape them as you like)
+   export function listRuns(filter?: { scriptId?: string; status?: RunStatus; deliveryId?: string; limit?: number }): Promise<RunView[]>;
+   export function getRun(id: string): Promise<RunView>;
+
+   // webhooks.ts (baseUrl has no trailing slash, e.g. "http://localhost:3000")
+   export function listWebhooks(baseUrl: string): Promise<WebhookView[]>;
+   export function getWebhook(id: string, baseUrl: string): Promise<WebhookView>;
+   export function createWebhook(input: CreateWebhookInput, baseUrl: string): Promise<WebhookView>;
+   export function updateWebhook(id: string, input: UpdateWebhookInput, baseUrl: string): Promise<WebhookView>;
+   export function deleteWebhook(id: string): Promise<void>;
+   export function listDeliveries(webhookId: string, limit?: number): Promise<Delivery[]>;  // default 50
+   export function sendTestEvent(webhookId: string): Promise<Delivery>;
+
+   // ingest.ts (throws 404 for an unknown webhook, 403 for a disabled one)
+   export function receive(webhookId: string, headers: Headers, rawBody: string, options?: { isTest?: boolean }): Promise<Delivery>;
+
+   // overview.ts
+   export function getOverview(): Promise<Overview>;
+   ```
 
 Done when: `npm test`, `npx tsc --noEmit` and `npm run lint` pass, and the work is committed on `frontend-be`.
 
-### BE2 — HTTP API (backend agent, after BE1)
+### BE2 — HTTP API (backend agent, alongside BE1)
 
 Owns: `app/api/**`. Shared route helpers (error mapping, body parsing) go in `app/api/_lib/`; a folder starting with an underscore is not routed.
+
+Import from `lib/server` using the signatures listed under BE1. Check the 1 MB limit in the receiver route itself, before calling `receive`.
 
 Write one route handler per row of 6.5, obeying section 5: no `runtime`, `dynamic` or `revalidate` exports; `await connection()` first in every `GET`; `await ctx.params`. Handlers stay thin: validate with `zod`, call `lib/server`, return JSON. `WebhookView.url` uses `PUBLIC_BASE_URL` when set, otherwise the request's origin.
 

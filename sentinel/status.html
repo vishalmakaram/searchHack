@@ -1,0 +1,157 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>sentinel status</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#e6edf3; --dim:#8b949e;
+          --ok:#3fb950; --warn:#d29922; --err:#f85149; --accent:#58a6ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  header { display:flex; gap:8px; align-items:center; padding:8px 14px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:14px; margin:0 8px 0 0; font-weight:600; }
+  #state { font-size:12px; color:var(--dim); }
+  #state.on { color:var(--ok); }
+  input, button { background:var(--panel); color:var(--fg); border:1px solid var(--line);
+                  border-radius:4px; font:inherit; padding:4px 8px; }
+  input { width:300px; }
+  input:focus, button:hover { border-color:var(--accent); outline:none; }
+  button { cursor:pointer; }
+  button.danger:hover { border-color:var(--err); color:var(--err); }
+  main { display:grid; grid-template-columns:280px minmax(340px,1fr) minmax(400px,1.15fr); height:calc(100vh - 45px); }
+  section { overflow:auto; padding:10px 14px; }
+  section + section { border-left:1px solid var(--line); }
+  h2 { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin:0 0 8px; }
+  .w { padding:6px 8px; border:1px solid transparent; border-radius:4px; cursor:pointer; margin-bottom:4px; }
+  .w:hover { background:var(--panel); }
+  .w.sel { border-color:var(--accent); background:var(--panel); }
+  .w .id { color:var(--fg); word-break:break-all; }
+  .w .q { color:var(--dim); font-size:12px; }
+  .st { font-size:11px; padding:0 5px; border-radius:3px; border:1px solid var(--line); }
+  .st.ready { color:var(--ok); border-color:var(--ok); }
+  .st.creating, .st.building { color:var(--warn); border-color:var(--warn); }
+  .st.failed, .st.interrupted { color:var(--err); border-color:var(--err); }
+  .ev { display:flex; gap:8px; padding:3px 0; border-bottom:1px dotted #21262d; }
+  .t { color:var(--dim); flex:0 0 62px; }
+  .k { flex:0 0 74px; font-weight:600; }
+  .k.build,.k.workspace { color:var(--accent); }
+  .k.agent { color:var(--warn); }
+  .k.run,.k.collect { color:#a371f7; }
+  .k.delivery { color:var(--ok); }
+  .m { white-space:pre-wrap; word-break:break-word; }
+  .ws { color:var(--dim); }
+</style>
+<header>
+  <h1>sentinel</h1>
+  <span id="state">connecting…</span>
+  <input id="q" placeholder="query — e.g. Telem AI changelog" size="34">
+  <button id="create">new workspace</button>
+  <input id="url" placeholder="url to run" size="30">
+  <button id="run" title="fetch this url, run the workspace pipeline, then the worker agent">run url</button>
+  <span id="count" style="margin-left:auto;color:var(--dim);font-size:12px"></span>
+</header>
+<main>
+  <section><h2>workspaces</h2><div id="list"></div></section>
+  <section><h2>events</h2><div id="events"></div></section>
+  <section><h2>agent activity</h2><div id="agents"></div></section>
+</main>
+<script>
+const state = document.getElementById('state');
+const evBox = document.getElementById('events');
+const agentBox = document.getElementById('agents');
+const listBox = document.getElementById('list');
+const count = document.getElementById('count');
+const qInput = document.getElementById('q');
+const urlInput = document.getElementById('url');
+let total = 0, selected = null;
+
+function describe(e) {
+  switch (e.type) {
+    case 'workspace': return `${e.query} — created`;
+    case 'build': return e.phase + [e.urls && `urls ${e.urls.length}`, e.sample, e.seconds && `${e.seconds}s`,
+                                     e.error].filter(Boolean).map(s => ' · ' + s).join('');
+    case 'run': return [e.phase, e.title, e.duration_ms != null && `${e.duration_ms}ms`,
+                        e.keep === false && 'keep=false', e.reason].filter(Boolean).join(' · ');
+    case 'delivery': return [e.phase, e.seconds && `${e.seconds}s`, e.ok === false && 'FAILED', e.reply].filter(Boolean).join(' · ');
+    case 'collect': return [e.phase, e.source, e.count != null && `${e.count} new`].filter(Boolean).join(' · ');
+    case 'agent': return e.tool ? `tool ${e.tool} ${e.args || ''}` : (e.line || e.phase || '');
+    case 'ws': return 'connected (' + e.clients + ' clients)';
+    default: return JSON.stringify(e);
+  }
+}
+
+function addEvent(e) {
+  if (e.type === 'agent') {
+    const row = document.createElement('div');
+    row.className = 'ev';
+    row.innerHTML = `<span class="t">${new Date(e.at * 1000).toLocaleTimeString()}</span>` +
+                    `<span class="m">${e.tool ? '<b>' + e.tool + '</b> ' : ''}${(e.line || e.args || e.phase || '')}</span>`;
+    agentBox.appendChild(row);
+    agentBox.scrollTop = agentBox.scrollHeight;
+    return;
+  }
+  const row = document.createElement('div');
+  row.className = 'ev';
+  row.innerHTML = `<span class="t">${new Date(e.at * 1000).toLocaleTimeString()}</span>` +
+                  `<span class="k ${e.type}">${e.type}</span>` +
+                  `<span class="m">${describe(e)} <span class="ws">${e.workspace || ''}</span></span>`;
+  evBox.appendChild(row);
+  evBox.scrollTop = evBox.scrollHeight;
+}
+
+async function refresh() {
+  let data;
+  try { data = await (await fetch('/workspaces')).json(); } catch { return; }
+  const ids = (data.workspaces || []).map(w => (typeof w === 'string' ? w : w.id)).filter(Boolean);
+  const rows = await Promise.all(ids.map(async id => {
+    let info = {};
+    try { info = await (await fetch('/workspaces/' + id)).json(); } catch {}
+    return { id, status: (info.status && info.status.status) || 'unknown', query: info.query || (info.status && info.status.query) || '' };
+  }));
+  listBox.innerHTML = '';
+  for (const w of rows) {
+    const row = document.createElement('div');
+    row.className = 'w' + (w.id === selected ? ' sel' : '');
+    row.innerHTML = `<div class="id">${w.id}</div>` +
+                    `<div class="q"><span class="st ${w.status}">${w.status}</span> ${w.query || ''}</div>`;
+    row.onclick = () => { selected = w.id; urlInput.placeholder = 'url to run in ' + w.id; refresh(); };
+    listBox.appendChild(row);
+  }
+}
+
+async function post(path, body) {
+  const res = await fetch(path, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.error) alert(`${res.status} ${data.error || ''}`);
+  return data;
+}
+
+document.getElementById('create').onclick = async () => {
+  const query = qInput.value.trim();
+  if (!query) return;
+  const data = await post('/workspaces', { query });
+  if (data.id) { selected = data.id; qInput.value = ''; }
+  refresh();
+};
+document.getElementById('run').onclick = async () => {
+  const url = urlInput.value.trim();
+  if (!selected) return alert('pick a workspace first');
+  if (!url) return alert('paste a url');
+  post(`/workspaces/${selected}/run`, { url });
+  urlInput.value = '';
+};
+
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => { state.textContent = 'live'; state.className = 'on'; };
+  ws.onclose = () => { state.textContent = 'reconnecting…'; state.className = '';
+                       setTimeout(connect, 1000); };
+  ws.onmessage = (m) => {
+    let e; try { e = JSON.parse(m.data); } catch { return; }
+    total++; count.textContent = total + ' events';
+    addEvent(e);
+    if (['build','workspace','run','delivery'].includes(e.type)) refresh();
+  };
+}
+refresh();
+connect();
+setInterval(refresh, 5000);
+</script>

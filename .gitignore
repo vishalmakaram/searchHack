@@ -4,11 +4,28 @@
 
 # Python
 .venv/
+env/
+venv/
 __pycache__/
+*.py[cod]
+*$py.class
 *.pyc
 
 # Saved search responses (they cost credits to make, but stay local)
 cache/
 
-# macOS
+# System
 .DS_Store
+
+# vendored toolchain
+bin/uv
+.scratch/
+
+# Webhook secrets and received deliveries (local only)
+data/
+
+# Leftover local files from the deleted Next.js prototype
+legacy-nextjs/
+
+# Runtime workspaces are machine-local; the tracked demo_* ones stay in git
+workspaces/*

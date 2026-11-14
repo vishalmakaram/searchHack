@@ -2,16 +2,11 @@ import { randomBytes } from "node:crypto";
 
 const ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
 
-export type IdPrefix = "ws" | "scr" | "wh" | "dlv" | "run" | "q";
+export type IdPrefix = "wh" | "dlv" | "run";
 
 /** A prefix plus 12 random characters, e.g. "scr_k3v9x0q2m7ab". */
 export function newId(prefix: IdPrefix): string {
   return `${prefix}_${randomString(12)}`;
-}
-
-/** The secret a webhook gives to Telem. */
-export function newSecret(): string {
-  return `whsec_${randomString(32)}`;
 }
 
 /** Uniformly random characters from `alphabet`, using a CSPRNG. */

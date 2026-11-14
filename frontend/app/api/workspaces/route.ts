@@ -8,7 +8,7 @@ export async function GET() {
   return respond(() => listWorkspaces());
 }
 
-/** Starts compiling; the workspace reads "compiling" until `compileReadyAt`. */
+/** Starts a build in the runtime; the workspace reads "building" until it finishes. */
 export async function POST(req: Request) {
-  return respond(async () => createWorkspace(await readJson(req, createWorkspaceBody)), 201);
+  return respond(async () => createWorkspace(await readJson(req, createWorkspaceBody)), 202);
 }

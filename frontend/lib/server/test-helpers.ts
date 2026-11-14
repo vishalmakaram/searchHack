@@ -4,10 +4,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach } from "vitest";
-import type { Script, ScriptStatus, Webhook, Workspace } from "@/lib/types";
+import type { RawWorkspace } from "@/lib/backend/runtime";
+import type { Run, ScriptRecord, ScriptStatus, Webhook } from "@/lib/types";
 import { now, setNow } from "./clock";
 import { newId } from "./ids";
-import { buildScript } from "./mock-compiler";
 import { emptyDb, mutate, setDbPath, type Db } from "./store";
 
 export const T0 = new Date("2026-11-14T12:00:00.000Z");
@@ -39,30 +39,32 @@ export async function setDb(contents: Partial<Db>): Promise<void> {
   });
 }
 
-export function makeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
-  const createdAt = overrides.createdAt ?? new Date(T0.getTime() - 60_000).toISOString();
+/** A workspace as the runtime describes it. Defaults to one whose build finished a minute ago. */
+export function rawWorkspace(id = "ws_test000001", status: RawWorkspace["status"] = {}): RawWorkspace {
+  const built = T0.getTime() / 1000 - 60;
   return {
-    id: newId("ws"),
-    name: "Test workspace",
-    intent: "Tell me when Acme Cloud changes its prices.",
-    queries: [{ id: newId("q"), text: "Acme Cloud pricing" }],
-    frequency: "1d",
-    escalationProviders: ["brave"],
-    extractionSchema: { vendor: "string — company", new_price: "number — price" },
-    scriptId: null,
-    createdAt,
-    compileReadyAt: new Date(Date.parse(createdAt) + 4000).toISOString(),
-    approvedAt: null,
-    ...overrides,
+    id,
+    memory: "# Memory: Acme Cloud pricing\n",
+    status: {
+      status: "ready",
+      query: "Tell me when Acme Cloud changes its prices",
+      created_at: built - 90,
+      built_at: built,
+      sample: "https://acme.example/pricing",
+      build: { ok: true, steps: [], verify: { ok: true, duration_ms: 120, output: { keep: true, processed: "Team plan 59 EUR" } } },
+      ...status,
+    },
   };
 }
 
-export function makeScript(workspace: Workspace, status: ScriptStatus, overrides: Partial<Script> = {}): Script {
-  const built = buildScript(workspace, { at: new Date(T0.getTime() - 60_000) });
+export function makeRecord(id: string, status: ScriptStatus, overrides: Partial<ScriptRecord> = {}): ScriptRecord {
+  const at = new Date(T0.getTime() - 30_000).toISOString();
   return {
-    ...built,
+    id,
+    name: "Tell me when Acme Cloud changes its prices",
     status,
-    deployedAt: status === "developed" ? null : built.createdAt,
+    deployedAt: status === "developed" ? null : at,
+    statusChangedAt: status === "developed" ? null : at,
     ...overrides,
   };
 }
@@ -71,7 +73,7 @@ export function makeWebhook(scriptIds: string[], overrides: Partial<Webhook> = {
   return {
     id: newId("wh"),
     name: "Test webhook",
-    secret: "whsec_test",
+    secret: null,
     enabled: true,
     scriptIds,
     createdAt: new Date(T0.getTime() - 60_000).toISOString(),
@@ -79,14 +81,33 @@ export function makeWebhook(scriptIds: string[], overrides: Partial<Webhook> = {
   };
 }
 
-/** One workspace with one script in `status`, and a webhook routed to it. */
-export async function setupPipeline(status: ScriptStatus = "active") {
-  const workspace = makeWorkspace({ approvedAt: new Date(T0.getTime() - 30_000).toISOString() });
-  const script = makeScript(workspace, status);
-  workspace.scriptId = script.id;
-  const webhook = makeWebhook([script.id]);
-  await setDb({ workspaces: [workspace], scripts: [script], webhooks: [webhook] });
-  return { workspace, script, webhook };
+export function makeRun(scriptId: string, overrides: Partial<Run> = {}): Run {
+  return {
+    id: newId("run"),
+    scriptId,
+    scriptName: "Test script",
+    source: "manual",
+    webhookId: null,
+    deliveryId: null,
+    url: "https://acme.example/pricing",
+    queuedAt: new Date(T0.getTime() - 10_000).toISOString(),
+    startedAt: null,
+    finishedAt: null,
+    status: "queued",
+    summary: null,
+    error: null,
+    pages: [],
+    ...overrides,
+  };
+}
+
+/** A script in `status` (stored switch only) and a webhook routed to it. */
+export async function setupPipeline(status: ScriptStatus = "active", webhook: Partial<Webhook> = {}) {
+  const raw = rawWorkspace();
+  const record = makeRecord(raw.id, status);
+  const hook = makeWebhook([raw.id], webhook);
+  await setDb({ scripts: [record], webhooks: [hook] });
+  return { raw, record, webhook: hook };
 }
 
 export function jsonHeaders(webhookType?: string): Headers {

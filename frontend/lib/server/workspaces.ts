@@ -1,189 +1,203 @@
+// Workspaces live in the Sentinel runtime. This module reads them from there
+// and adds what the local store knows (the script's switch).
+
+import * as output from "@/lib/backend/output";
+import * as runtime from "@/lib/backend/runtime";
+import type { RawAlert, RawStats } from "@/lib/backend/output";
+import type { RawStatus, RawWorkspace } from "@/lib/backend/runtime";
 import type {
-  ApproveWorkspaceInput,
+  Alert,
+  BuildCheck,
   CreateWorkspaceInput,
-  Frequency,
-  UpdateWorkspaceInput,
-  Workspace,
+  OutputStats,
+  WorkspaceDetail,
+  WorkspaceOutput,
   WorkspaceStatus,
   WorkspaceView,
 } from "@/lib/types";
-import { now } from "./clock";
 import { DomainError, notFound } from "./errors";
-import { newId } from "./ids";
-import { buildScript, COMPILE_MS, compileIntent } from "./mock-compiler";
-import { mutate, read, type Db } from "./store";
-import { cleanText, iso, ms, newestFirst } from "./util";
+import { read, type Db } from "./store";
+import { cleanText, iso } from "./util";
 
-export const FREQUENCIES: readonly Frequency[] = ["1h", "6h", "12h", "1d", "7d"];
-export const MAX_INTENT_LENGTH = 1000;
-export const MAX_NAME_LENGTH = 80;
-export const MAX_QUERY_LENGTH = 300;
-export const MAX_QUERIES = 20;
+export const MAX_QUERY_LENGTH = 500;
+export const NAME_LENGTH = 64;
+export const ALERT_LIMIT = 100;
 
-// ------------------------------------------------------------------- Status
+// ------------------------------------------------------------------ Mapping
 
-/** compiling until compileReadyAt, then awaiting_approval, then ready once approved. */
-export function workspaceStatusAt(workspace: Workspace, at: Date): WorkspaceStatus {
-  if (workspace.approvedAt !== null) return "ready";
-  return at.getTime() < ms(workspace.compileReadyAt) ? "compiling" : "awaiting_approval";
+export function workspaceStatus(raw: RawStatus): WorkspaceStatus {
+  switch (raw.status) {
+    case "creating":
+      return "building";
+    case "ready":
+      return "ready";
+    case "failed":
+      return "failed";
+    case "interrupted":
+      return "interrupted";
+    default:
+      // A folder the output service made for results; the runtime never built it.
+      return "output_only";
+  }
 }
 
-export function toWorkspaceView(workspace: Workspace, at: Date = now()): WorkspaceView {
-  return { ...workspace, status: workspaceStatusAt(workspace, at) };
+/** The start of the query, cut at a word, or the id when there is no query. */
+export function workspaceName(id: string, query: string | null): string {
+  const text = cleanText(query ?? "");
+  if (text === "") return id;
+  if (text.length <= NAME_LENGTH) return text;
+  const cut = text.slice(0, NAME_LENGTH);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > NAME_LENGTH / 2 ? cut.slice(0, space) : cut).replace(/[\s,;:.-]+$/, "")}…`;
+}
+
+/** The runtime writes seconds since the epoch. */
+function time(seconds: unknown): string | null {
+  return typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 ? iso(seconds * 1000) : null;
+}
+
+export function toWorkspaceView(raw: RawWorkspace, db: Db): WorkspaceView {
+  const status = workspaceStatus(raw.status);
+  const query = typeof raw.status.query === "string" && raw.status.query.trim() !== "" ? raw.status.query : null;
+  const record = db.scripts.find((s) => s.id === raw.id);
+  return {
+    id: raw.id,
+    name: workspaceName(raw.id, query),
+    query,
+    status,
+    createdAt: time(raw.status.created_at),
+    builtAt: time(raw.status.built_at),
+    error: status === "failed" || status === "interrupted" ? (raw.status.error ?? null) : null,
+    scriptStatus: status === "ready" ? (record?.status ?? "developed") : null,
+    monitorId: typeof raw.status.monitor_id === "string" && raw.status.monitor_id ? raw.status.monitor_id : null,
+    pagesSeen: Array.isArray(raw.status.seen_urls) ? raw.status.seen_urls.length : 0,
+    resultsHandled: typeof raw.status.seq === "number" ? raw.status.seq : 0,
+  };
+}
+
+export function buildCheck(raw: RawStatus): BuildCheck | null {
+  const verify = raw.build?.verify;
+  if (!verify) return null;
+  return {
+    ok: verify.ok === true,
+    durationMs: typeof verify.duration_ms === "number" ? verify.duration_ms : null,
+    output: verify.output ?? null,
+    error: typeof verify.error === "string" && verify.error ? verify.error : null,
+  };
+}
+
+export function sampleUrl(raw: RawStatus): string | null {
+  return typeof raw.sample === "string" && raw.sample ? raw.sample : null;
 }
 
 // -------------------------------------------------------------------- Reads
 
-export async function listWorkspaces(): Promise<WorkspaceView[]> {
-  const db = await read();
-  const at = now();
-  return newestFirst(db.workspaces, (w) => w.createdAt).map((w) => toWorkspaceView(w, at));
+/** Every workspace the runtime has, as it describes them. */
+export async function loadRawWorkspaces(): Promise<RawWorkspace[]> {
+  const ids = await runtime.listWorkspaceIds();
+  const all = await Promise.all(ids.map((id) => runtime.getWorkspace(id)));
+  return all.filter((w): w is RawWorkspace => w !== null);
 }
 
-export async function getWorkspace(id: string): Promise<WorkspaceView> {
-  const db = await read();
-  return toWorkspaceView(findWorkspace(db, id));
+/** 404 when the runtime does not know the id. */
+export async function loadRawWorkspace(id: string): Promise<RawWorkspace> {
+  const raw = await runtime.getWorkspace(id);
+  if (!raw) throw notFound("workspace", id);
+  return raw;
+}
+
+const STATUS_ORDER: Record<WorkspaceStatus, number> = { building: 0, failed: 1, interrupted: 1, ready: 1, output_only: 2 };
+
+/** Builds in progress first, then newest first; folders without a script last. */
+export function sortWorkspaces(views: WorkspaceView[]): WorkspaceView[] {
+  return [...views].sort(
+    (a, b) =>
+      STATUS_ORDER[a.status] - STATUS_ORDER[b.status] ||
+      Date.parse(b.createdAt ?? "1970-01-01") - Date.parse(a.createdAt ?? "1970-01-01") ||
+      a.id.localeCompare(b.id),
+  );
+}
+
+export async function listWorkspaces(): Promise<WorkspaceView[]> {
+  const [raws, db] = await Promise.all([loadRawWorkspaces(), read()]);
+  return sortWorkspaces(raws.map((raw) => toWorkspaceView(raw, db)));
+}
+
+export async function getWorkspace(id: string): Promise<WorkspaceDetail> {
+  const [raw, db] = await Promise.all([loadRawWorkspace(id), read()]);
+  return {
+    ...toWorkspaceView(raw, db),
+    memory: raw.memory,
+    sampleUrl: sampleUrl(raw.status),
+    buildCheck: buildCheck(raw.status),
+  };
 }
 
 // ------------------------------------------------------------------- Writes
 
+/** Starts a build in the runtime. The workspace reads "building" until it finishes. */
 export async function createWorkspace(input: CreateWorkspaceInput): Promise<WorkspaceView> {
-  const intent = cleanText(typeof input?.intent === "string" ? input.intent : "");
-  if (intent === "") throw new DomainError(400, "Describe what you want watched.");
-  if (intent.length > MAX_INTENT_LENGTH) {
-    throw new DomainError(400, `The description is too long (at most ${MAX_INTENT_LENGTH} characters).`);
+  const query = cleanText(typeof input?.query === "string" ? input.query : "");
+  if (query === "") throw new DomainError(400, "Describe what to watch.");
+  if (query.length > MAX_QUERY_LENGTH) {
+    throw new DomainError(400, `That is too long (at most ${MAX_QUERY_LENGTH} characters).`);
   }
+  const id = await runtime.createWorkspace(query);
+  const [raw, db] = await Promise.all([runtime.getWorkspace(id), read()]);
+  // The runtime writes status.json before it answers, so this is only a fallback.
+  return toWorkspaceView(raw ?? { id, status: { status: "creating", query }, memory: "" }, db);
+}
 
-  const at = now();
-  const proposal = compileIntent(intent);
-  const workspace: Workspace = {
-    id: newId("ws"),
-    name: proposal.name.slice(0, MAX_NAME_LENGTH),
-    intent,
-    queries: proposal.queries.map((text) => ({ id: newId("q"), text })),
-    frequency: proposal.frequency,
-    escalationProviders: proposal.escalationProviders,
-    extractionSchema: proposal.extractionSchema,
-    scriptId: null,
-    createdAt: at.toISOString(),
-    compileReadyAt: iso(at.getTime() + COMPILE_MS),
-    approvedAt: null,
+// ------------------------------------------------------------------- Output
+
+/** "2026-11-14 21:47:23Z" -> ISO, or null. */
+function alertTime(timestamp: unknown): string | null {
+  if (typeof timestamp !== "string") return null;
+  const parsed = Date.parse(timestamp.includes("T") ? timestamp : timestamp.replace(" ", "T"));
+  return Number.isNaN(parsed) ? null : iso(parsed);
+}
+
+export function toAlert(raw: RawAlert): Alert {
+  const delivered = raw.suppressed !== true;
+  return {
+    seq: typeof raw.seq === "number" ? raw.seq : 0,
+    at: alertTime(raw.timestamp),
+    delivered,
+    reason: delivered ? "" : (raw.suppression_reason ?? ""),
+    eventType: raw.event_type ?? "",
+    impact: (raw.impact ?? "").toLowerCase(),
+    summary: raw.summary ?? "",
+    sourceUrl: raw.source_url ?? "",
+    confidence: typeof raw.confidence === "number" ? raw.confidence : null,
   };
-  await mutate((db) => {
-    db.workspaces.push(workspace);
-  });
-  return toWorkspaceView(workspace, at);
 }
 
-/** Name can always change. Queries and frequency are frozen once approved (409 if they differ). */
-export async function updateWorkspace(id: string, input: UpdateWorkspaceInput): Promise<WorkspaceView> {
-  const name = input.name === undefined ? undefined : checkName(input.name);
-  const queries = input.queries === undefined ? undefined : checkQueries(input.queries);
-  if (input.frequency !== undefined && !FREQUENCIES.includes(input.frequency)) {
-    throw new DomainError(400, `Unknown frequency "${String(input.frequency)}".`);
+export function toStats(raw: RawStats): OutputStats {
+  return {
+    received: raw.total_received ?? 0,
+    delivered: raw.total_alerts_delivered ?? 0,
+    suppressed: raw.total_suppressed ?? 0,
+    docEntries: raw.doc_entries ?? 0,
+  };
+}
+
+/**
+ * What the output service holds for a workspace. The workspace is looked up
+ * first, because the output service creates a folder for any id it is asked
+ * about. An unreachable output service is not an error here: `available` is
+ * false and the page says so.
+ */
+export async function getWorkspaceOutput(id: string): Promise<WorkspaceOutput> {
+  await loadRawWorkspace(id);
+  try {
+    const [stats, alerts, doc] = await Promise.all([output.stats(id), output.alerts(id, ALERT_LIMIT), output.researchDoc(id)]);
+    return {
+      available: true,
+      stats: toStats(stats),
+      alerts: alerts.map(toAlert).sort((a, b) => b.seq - a.seq),
+      doc,
+    };
+  } catch {
+    return { available: false, stats: null, alerts: [], doc: "" };
   }
-
-  return mutate((db) => {
-    const workspace = findWorkspace(db, id);
-    const approved = workspace.approvedAt !== null;
-    const queriesChange = queries !== undefined && !sameTexts(queries, workspace.queries);
-    const frequencyChange = input.frequency !== undefined && input.frequency !== workspace.frequency;
-    if (approved && (queriesChange || frequencyChange)) {
-      throw new DomainError(409, "Queries and frequency are frozen once a workspace is approved.");
-    }
-
-    if (name !== undefined) workspace.name = name;
-    if (queries !== undefined && queriesChange) workspace.queries = withIds(queries, workspace.queries);
-    if (input.frequency !== undefined) workspace.frequency = input.frequency;
-    return toWorkspaceView(workspace);
-  });
-}
-
-/** Also deletes the workspace's scripts and their runs, and unroutes those scripts from every webhook. Deliveries stay. */
-export async function deleteWorkspace(id: string): Promise<void> {
-  await mutate((db) => {
-    const workspace = findWorkspace(db, id);
-    const scriptIds = new Set(
-      db.scripts.filter((s) => s.workspaceId === workspace.id || s.id === workspace.scriptId).map((s) => s.id),
-    );
-    db.workspaces = db.workspaces.filter((w) => w.id !== workspace.id);
-    db.scripts = db.scripts.filter((s) => !scriptIds.has(s.id));
-    db.runs = db.runs.filter((r) => !scriptIds.has(r.scriptId));
-    for (const webhook of db.webhooks) {
-      webhook.scriptIds = webhook.scriptIds.filter((sid) => !scriptIds.has(sid));
-    }
-  });
-}
-
-/** Saves the final queries and creates the workspace's `developed` script. */
-export async function approveWorkspace(id: string, input: ApproveWorkspaceInput): Promise<WorkspaceView> {
-  const queries = checkQueries(input?.queries);
-
-  return mutate((db) => {
-    const workspace = findWorkspace(db, id);
-    const at = now();
-    const status = workspaceStatusAt(workspace, at);
-    if (status === "ready") throw new DomainError(409, "This workspace is already approved.");
-    if (status === "compiling") {
-      throw new DomainError(409, "This workspace is still compiling; wait for the proposed queries.");
-    }
-
-    workspace.queries = withIds(queries, workspace.queries);
-    const script = buildScript(workspace, { at });
-    db.scripts.push(script);
-    workspace.scriptId = script.id;
-    workspace.approvedAt = at.toISOString();
-    return toWorkspaceView(workspace, at);
-  });
-}
-
-// ------------------------------------------------------------------ Helpers
-
-function findWorkspace(db: Db, id: string): Workspace {
-  const workspace = db.workspaces.find((w) => w.id === id);
-  if (!workspace) throw notFound("workspace", id);
-  return workspace;
-}
-
-function checkName(raw: unknown): string {
-  const name = cleanText(typeof raw === "string" ? raw : "");
-  if (name === "") throw new DomainError(400, "The name cannot be empty.");
-  if (name.length > MAX_NAME_LENGTH) {
-    throw new DomainError(400, `The name is too long (at most ${MAX_NAME_LENGTH} characters).`);
-  }
-  return name;
-}
-
-/** Trimmed, blank and repeated queries dropped. 400 if nothing is left. */
-function checkQueries(raw: unknown): string[] {
-  if (!Array.isArray(raw)) throw new DomainError(400, "queries must be a list of strings.");
-  const seen = new Set<string>();
-  const queries: string[] = [];
-  for (const item of raw) {
-    if (typeof item !== "string") throw new DomainError(400, "queries must be a list of strings.");
-    const text = cleanText(item);
-    if (text === "" || seen.has(text.toLowerCase())) continue;
-    if (text.length > MAX_QUERY_LENGTH) {
-      throw new DomainError(400, `A query is too long (at most ${MAX_QUERY_LENGTH} characters).`);
-    }
-    seen.add(text.toLowerCase());
-    queries.push(text);
-  }
-  if (queries.length === 0) throw new DomainError(400, "Keep at least one query.");
-  if (queries.length > MAX_QUERIES) throw new DomainError(400, `At most ${MAX_QUERIES} queries.`);
-  return queries;
-}
-
-function sameTexts(texts: string[], queries: Workspace["queries"]): boolean {
-  return texts.length === queries.length && texts.every((t, i) => t === queries[i].text);
-}
-
-/** Keeps the id of any query whose text is unchanged. */
-function withIds(texts: string[], previous: Workspace["queries"]): Workspace["queries"] {
-  const unused = [...previous];
-  return texts.map((text) => {
-    const index = unused.findIndex((q) => q.text === text);
-    if (index === -1) return { id: newId("q"), text };
-    return { id: unused.splice(index, 1)[0].id, text };
-  });
 }

@@ -1,8 +1,8 @@
-import { Check, Clock, LoaderCircle, TriangleAlert, X } from "lucide-react";
-import type { Delivery, Health, RunStatus, ScriptActivity, ScriptStatus, WorkspaceStatus } from "@/lib/types";
+import { Check, Clock, Equal, LoaderCircle, Minus, TriangleAlert, X } from "lucide-react";
+import type { Health, RunStatus, ScriptActivity, ScriptStatus, SignatureCheck, WorkspaceStatus } from "@/lib/types";
 import { cn } from "@/lib/cn";
 import { StatusPill } from "./status-pill";
-import { HEALTH, RUN_STATUS, SCRIPT_ACTIVITY, SCRIPT_STATUS, SIGNATURE, WORKSPACE_STATUS } from "./tones";
+import { HEALTH, impactLook, RUN_STATUS, SCRIPT_ACTIVITY, SCRIPT_STATUS, SIGNATURE, STREAM, WORKSPACE_STATUS } from "./tones";
 
 const spinner = <LoaderCircle className="animate-spin" />;
 
@@ -28,8 +28,9 @@ export function ScriptActivityBadge({ activity }: { activity: ScriptActivity }) 
 const RUN_ICONS: Record<RunStatus, React.ReactNode> = {
   queued: <Clock />,
   running: spinner,
-  succeeded: <Check />,
-  invalid: <TriangleAlert />,
+  delivered: <Check />,
+  dropped: <Minus />,
+  unchanged: <Equal />,
   failed: <X />,
 };
 
@@ -40,7 +41,7 @@ export function RunStatusBadge({ status }: { status: RunStatus }) {
 
 export function WorkspaceStatusBadge({ status }: { status: WorkspaceStatus }) {
   const look = WORKSPACE_STATUS[status];
-  return <StatusPill tone={look.tone} label={look.label} icon={status === "compiling" ? spinner : undefined} />;
+  return <StatusPill tone={look.tone} label={look.label} icon={status === "building" ? spinner : status === "failed" ? <X /> : undefined} />;
 }
 
 export function HealthBadge({ health }: { health: Health }) {
@@ -59,11 +60,27 @@ export function HealthDot({ health, className }: { health: Health; className?: s
   );
 }
 
-export function SignatureBadge({ signature }: { signature: Delivery["signature"] }) {
+export function SignatureBadge({ signature }: { signature: SignatureCheck }) {
   const look = SIGNATURE[signature];
   return <StatusPill variant="plain" tone={look.tone} label={look.label} />;
 }
 
 export function EnabledBadge({ enabled }: { enabled: boolean }) {
   return <StatusPill tone={enabled ? "green" : "grey"} label={enabled ? "Enabled" : "Disabled"} />;
+}
+
+/** Whether the live event stream is connected. */
+export function StreamBadge({ status }: { status: "connecting" | "live" | "offline" }) {
+  const look = STREAM[status];
+  return <StatusPill variant="plain" tone={look.tone} label={look.label} live={status === "live"} />;
+}
+
+export function ImpactBadge({ impact }: { impact: string }) {
+  const look = impactLook(impact);
+  return <StatusPill tone={look.tone} label={look.label} />;
+}
+
+/** Up or down, for one of the Python services. */
+export function ServiceBadge({ up }: { up: boolean }) {
+  return <StatusPill variant="plain" tone={up ? "green" : "red"} label={up ? "Running" : "Not reachable"} />;
 }

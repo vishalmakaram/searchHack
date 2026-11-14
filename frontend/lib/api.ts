@@ -1,22 +1,22 @@
 // The only place in the app that calls fetch().
 //
-// One typed function per row of the HTTP API (PLAN.md section 6.5). Together
-// with lib/types.ts this is the replacement boundary: when the real backend
-// exists, only this file (or the route handlers behind it) changes.
+// One typed function per route under app/api. Together with lib/types.ts this
+// is the boundary between the pages and the server.
 
 import type {
-  ApproveWorkspaceInput,
   CreateWebhookInput,
   CreateWorkspaceInput,
   Delivery,
   Overview,
   RunStatus,
   RunView,
+  ScriptDetail,
   ScriptStatus,
   ScriptView,
   UpdateWebhookInput,
-  UpdateWorkspaceInput,
   WebhookView,
+  WorkspaceDetail,
+  WorkspaceOutput,
   WorkspaceView,
 } from "./types";
 
@@ -94,27 +94,22 @@ export const getOverview = () => request<Overview>("/api/overview");
 
 export const listWorkspaces = () => request<WorkspaceView[]>("/api/workspaces");
 
+/** Starts a build. The workspace comes back "building". */
 export const createWorkspace = (input: CreateWorkspaceInput) =>
   request<WorkspaceView>("/api/workspaces", { method: "POST", body: input });
 
 export const getWorkspace = (workspaceId: string) =>
-  request<WorkspaceView>(`/api/workspaces/${id(workspaceId)}`);
+  request<WorkspaceDetail>(`/api/workspaces/${id(workspaceId)}`);
 
-export const updateWorkspace = (workspaceId: string, input: UpdateWorkspaceInput) =>
-  request<WorkspaceView>(`/api/workspaces/${id(workspaceId)}`, { method: "PATCH", body: input });
-
-export const deleteWorkspace = (workspaceId: string) =>
-  request<{ ok: true }>(`/api/workspaces/${id(workspaceId)}`, { method: "DELETE" });
-
-export const approveWorkspace = (workspaceId: string, input: ApproveWorkspaceInput) =>
-  request<WorkspaceView>(`/api/workspaces/${id(workspaceId)}/approve`, { method: "POST", body: input });
+export const getWorkspaceOutput = (workspaceId: string) =>
+  request<WorkspaceOutput>(`/api/workspaces/${id(workspaceId)}/output`);
 
 // ------------------------------------------------------------------- Scripts
 
 export const listScripts = (status?: ScriptStatus) =>
   request<ScriptView[]>(`/api/scripts${query({ status })}`);
 
-export const getScript = (scriptId: string) => request<ScriptView>(`/api/scripts/${id(scriptId)}`);
+export const getScript = (scriptId: string) => request<ScriptDetail>(`/api/scripts/${id(scriptId)}`);
 
 export const deployScript = (scriptId: string) =>
   request<ScriptView>(`/api/scripts/${id(scriptId)}/deploy`, { method: "POST" });
@@ -124,6 +119,14 @@ export const deactivateScript = (scriptId: string) =>
 
 export const activateScript = (scriptId: string) =>
   request<ScriptView>(`/api/scripts/${id(scriptId)}/activate`, { method: "POST" });
+
+/** Queues one page for the script. The run comes back "queued"; poll for its outcome. */
+export const runScriptUrl = (scriptId: string, url: string) =>
+  request<RunView>(`/api/scripts/${id(scriptId)}/run`, { method: "POST", body: { url } });
+
+/** Queues a collect: ask Telem what is new and run each new page. */
+export const collectScript = (scriptId: string) =>
+  request<RunView>(`/api/scripts/${id(scriptId)}/collect`, { method: "POST" });
 
 // ---------------------------------------------------------------------- Runs
 
@@ -156,9 +159,11 @@ export const deleteWebhook = (webhookId: string) =>
 export const listDeliveries = (webhookId: string, limit?: number) =>
   request<Delivery[]>(`/api/webhooks/${id(webhookId)}/deliveries${query({ limit })}`);
 
-export const sendTestEvent = (webhookId: string) =>
-  request<Delivery>(`/api/webhooks/${id(webhookId)}/test`, { method: "POST" });
+/** Sends a test delivery naming `url`; active target scripts run that page for real. */
+export const sendTestEvent = (webhookId: string, url: string) =>
+  request<Delivery>(`/api/webhooks/${id(webhookId)}/test`, { method: "POST", body: { url } });
 
 // ----------------------------------------------------------------------- Dev
 
+/** Empties the local store: script switches, webhooks, deliveries and the run log. */
 export const resetData = () => request<{ ok: true }>("/api/dev/reset", { method: "POST" });

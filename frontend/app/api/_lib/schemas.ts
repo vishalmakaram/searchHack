@@ -1,9 +1,9 @@
-// zod schemas for every request body and query string in PLAN.md section 6.5.
+// zod schemas for every request body and query string of the HTTP API.
 //
 // These check shape only: types, enum values, and no unknown keys. The domain
-// rules (trimming, blank or repeated queries, length limits, the limit default
-// and cap, unknown script ids) live in lib/server, which owns them and words
-// their messages, so they are not repeated here.
+// rules (trimming, length limits, what counts as a web address, the limit
+// default and cap, unknown script ids) live in lib/server, which owns them and
+// words their messages, so they are not repeated here.
 //
 // Each body schema is checked against its input type in lib/types.ts with
 // `satisfies`, and each enum is built from a Record keyed by its union, so a
@@ -11,14 +11,13 @@
 
 import { z } from "zod";
 import type {
-  ApproveWorkspaceInput,
   CreateWebhookInput,
   CreateWorkspaceInput,
-  Frequency,
   RunStatus,
+  RunUrlInput,
   ScriptStatus,
+  TestEventInput,
   UpdateWebhookInput,
-  UpdateWorkspaceInput,
 } from "@/lib/types";
 
 /** A zod enum holding exactly the members of the union `T`; the Record makes the list exhaustive. */
@@ -26,38 +25,44 @@ function enumOf<T extends string>(members: Record<T, true>) {
   return z.enum(Object.keys(members) as [T, ...T[]]);
 }
 
-const frequency = enumOf<Frequency>({ "1h": true, "6h": true, "12h": true, "1d": true, "7d": true });
 const scriptStatus = enumOf<ScriptStatus>({ developed: true, active: true, inactive: true });
-const runStatus = enumOf<RunStatus>({ queued: true, running: true, succeeded: true, invalid: true, failed: true });
+const runStatus = enumOf<RunStatus>({
+  queued: true,
+  running: true,
+  delivered: true,
+  dropped: true,
+  unchanged: true,
+  failed: true,
+});
 
 const strings = z.array(z.string());
 
 // --------------------------------------------------------------- Bodies
 
 export const createWorkspaceBody = z.strictObject({
-  intent: z.string(),
+  query: z.string(),
 }) satisfies z.ZodType<CreateWorkspaceInput>;
 
-export const updateWorkspaceBody = z.strictObject({
-  name: z.string().optional(),
-  queries: strings.optional(),
-  frequency: frequency.optional(),
-}) satisfies z.ZodType<UpdateWorkspaceInput>;
+export const runUrlBody = z.strictObject({
+  url: z.string(),
+}) satisfies z.ZodType<RunUrlInput>;
 
-export const approveWorkspaceBody = z.strictObject({
-  queries: strings,
-}) satisfies z.ZodType<ApproveWorkspaceInput>;
+export const testEventBody = z.strictObject({
+  url: z.string(),
+}) satisfies z.ZodType<TestEventInput>;
 
 export const createWebhookBody = z.strictObject({
   name: z.string(),
   /** A webhook may route to no scripts, so leaving this out means []. */
   scriptIds: strings.default([]),
+  secret: z.string().nullable().optional(),
 }) satisfies z.ZodType<CreateWebhookInput>;
 
 export const updateWebhookBody = z.strictObject({
   name: z.string().optional(),
   enabled: z.boolean().optional(),
   scriptIds: strings.optional(),
+  secret: z.string().nullable().optional(),
 }) satisfies z.ZodType<UpdateWebhookInput>;
 
 // -------------------------------------------------------- Query strings

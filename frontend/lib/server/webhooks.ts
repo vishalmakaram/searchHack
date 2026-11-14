@@ -1,20 +1,23 @@
 import type {
   CreateWebhookInput,
   Delivery,
-  Script,
+  TestEventInput,
   UpdateWebhookInput,
   Webhook,
   WebhookView,
 } from "@/lib/types";
 import { now } from "./clock";
 import { DomainError, notFound } from "./errors";
-import { newId, newSecret, randomString } from "./ids";
+import { newId } from "./ids";
 import { ingestInto, seenSeqs, WEBHOOK_TYPE_HEADER } from "./ingest";
-import { checkLimit, typeKind } from "./runtime";
+import { checkLimit, checkUrl } from "./runs";
+import { hasScript } from "./scripts";
 import { mutate, read, type Db, MAX_DELIVERIES } from "./store";
 import { cleanText, newestFirst } from "./util";
+import { loadRawWorkspaces } from "./workspaces";
 
 export const MAX_WEBHOOK_NAME_LENGTH = 80;
+export const MAX_SECRET_LENGTH = 500;
 export const DEFAULT_DELIVERY_LIMIT = 50;
 
 // -------------------------------------------------------------------- Views
@@ -27,8 +30,10 @@ export function webhookUrl(id: string, baseUrl: string): string {
 export function toWebhookView(webhook: Webhook, db: Db, baseUrl: string): WebhookView {
   const deliveries = db.deliveries.filter((d) => d.webhookId === webhook.id);
   const last = newestFirst(deliveries, (d) => d.receivedAt)[0];
+  const { secret, ...rest } = webhook;
   return {
-    ...webhook,
+    ...rest,
+    secretSet: typeof secret === "string" && secret !== "",
     url: webhookUrl(webhook.id, baseUrl),
     deliveryCount: deliveries.length,
     lastDeliveryAt: last ? last.receivedAt : null,
@@ -61,16 +66,18 @@ export async function listDeliveries(webhookId: string, limit?: number): Promise
 
 // ------------------------------------------------------------------- Writes
 
-/** Generates the secret. 400 if `scriptIds` names an unknown script. */
+/** 400 if `scriptIds` names something that is not a script. */
 export async function createWebhook(input: CreateWebhookInput, baseUrl: string): Promise<WebhookView> {
   const name = checkName(input?.name);
+  const secret = checkSecret(input?.secret) ?? null;
+  const scriptIds = await checkScriptIds(input?.scriptIds);
   return mutate((db) => {
     const webhook: Webhook = {
       id: newId("wh"),
       name,
-      secret: newSecret(),
+      secret,
       enabled: true,
-      scriptIds: checkScriptIds(db, input?.scriptIds),
+      scriptIds,
       createdAt: now().toISOString(),
     };
     db.webhooks.push(webhook);
@@ -83,16 +90,19 @@ export async function updateWebhook(id: string, input: UpdateWebhookInput, baseU
   if (input.enabled !== undefined && typeof input.enabled !== "boolean") {
     throw new DomainError(400, "enabled must be true or false.");
   }
+  const secret = checkSecret(input.secret);
+  const scriptIds = input.scriptIds === undefined ? undefined : await checkScriptIds(input.scriptIds);
   return mutate((db) => {
     const webhook = findWebhook(db, id);
     if (name !== undefined) webhook.name = name;
     if (input.enabled !== undefined) webhook.enabled = input.enabled;
-    if (input.scriptIds !== undefined) webhook.scriptIds = checkScriptIds(db, input.scriptIds);
+    if (secret !== undefined) webhook.secret = secret;
+    if (scriptIds !== undefined) webhook.scriptIds = scriptIds;
     return toWebhookView(webhook, db, baseUrl);
   });
 }
 
-/** Also deletes its deliveries. Runs it produced stay with their scripts. */
+/** Also deletes its deliveries. Runs it produced stay in the run log. */
 export async function deleteWebhook(id: string): Promise<void> {
   await mutate((db) => {
     findWebhook(db, id);
@@ -102,18 +112,25 @@ export async function deleteWebhook(id: string): Promise<void> {
 }
 
 /**
- * Sends a sample agent.changes delivery through the real ingest path, with a
- * seq one higher than any this webhook has seen. 403 if the webhook is disabled.
+ * Sends an agent.changes delivery naming `url` through the real ingest path,
+ * with a seq one higher than any this webhook has seen. Every active script
+ * the webhook routes to then runs that page for real. 403 if the webhook is
+ * disabled. Call `drainRuns()` afterwards.
  */
-export async function sendTestEvent(webhookId: string): Promise<Delivery> {
+export async function sendTestEvent(webhookId: string, input: TestEventInput): Promise<Delivery> {
+  const url = checkUrl(input?.url);
   return mutate((db) => {
     const webhook = findWebhook(db, webhookId);
     // Checked here too so a disabled webhook fails before a payload is built.
     if (!webhook.enabled) throw new DomainError(403, "This webhook is disabled.");
-    const targets = webhook.scriptIds.flatMap((id) => db.scripts.filter((s) => s.id === id));
-    const sample = targets.find((s) => s.status === "active") ?? targets[0] ?? null;
     const seq = Math.max(0, ...seenSeqs(db, webhook.id)) + 1;
-    const rawBody = JSON.stringify(testPayload(seq, sample));
+    const rawBody = JSON.stringify({
+      type: "agent.changes",
+      monitor_id: "mon_sentinel_test",
+      changes: [{ seq, kind: "entity_added", url, title: "Test event from Sentinel" }],
+      next_cursor: `cur_test_${seq}`,
+      watermark: now().toISOString(),
+    });
     const headers = new Headers({
       "content-type": "application/json",
       [WEBHOOK_TYPE_HEADER]: "agent.changes",
@@ -139,85 +156,27 @@ function checkName(raw: unknown): string {
   return name;
 }
 
-/** Deduplicated, in the order given. 400 for anything unknown. */
-function checkScriptIds(db: Db, raw: unknown): string[] {
+/** undefined: leave as it is. null or blank: remove. Otherwise the trimmed secret. */
+function checkSecret(raw: unknown): string | null | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null) return null;
+  if (typeof raw !== "string") throw new DomainError(400, "secret must be text.");
+  const secret = raw.trim();
+  if (secret.length > MAX_SECRET_LENGTH) throw new DomainError(400, "That secret is too long.");
+  return secret === "" ? null : secret;
+}
+
+/** Deduplicated, in the order given. 400 for anything that is not a script in the runtime. */
+async function checkScriptIds(raw: unknown): Promise<string[]> {
   if (!Array.isArray(raw) || raw.some((id) => typeof id !== "string")) {
     throw new DomainError(400, "scriptIds must be a list of script ids.");
   }
   const ids = [...new Set(raw as string[])];
-  const unknown = ids.filter((id) => !db.scripts.some((s) => s.id === id));
+  if (ids.length === 0) return ids;
+  const known = new Set((await loadRawWorkspaces()).filter(hasScript).map((w) => w.id));
+  const unknown = ids.filter((id) => !known.has(id));
   if (unknown.length > 0) {
     throw new DomainError(400, `Unknown script${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}.`);
   }
   return ids;
-}
-
-function testPayload(seq: number, script: Script | null) {
-  const at = now();
-  const url = `https://telem.example/test/${seq}`;
-  return {
-    type: "agent.changes",
-    monitor_id: "mon_sentinel_test",
-    changes: [
-      {
-        seq,
-        kind: "entity_added",
-        url,
-        title: "Test event from Sentinel",
-        page_text: samplePage(script, url, at),
-        telem_run_id: `trun_test_${randomString(8)}`,
-      },
-    ],
-    next_cursor: `cur_test_${seq}`,
-    watermark: at.toISOString(),
-  };
-}
-
-const SAMPLE_VALUES: Record<string, string> = {
-  title: "Test event from Sentinel",
-  summary: "A sample change sent with the Send test event button.",
-  vendor: "Acme Cloud",
-  plan: "Team",
-  old_price: "49",
-  new_price: "59",
-  currency: "EUR",
-  authority: "Office for AI Oversight",
-  company: "Novacrest AI",
-  action: "warning",
-  penalty_amount: "none",
-  penalty_eur: "none",
-  role: "Staff engineer",
-  location: "Remote (EU)",
-  seniority: "staff",
-  product: "Sentinel test product",
-  version: "1.0",
-};
-
-/** "Field name: value" lines for the target script's schema, which the mock runtime reads back. */
-function samplePage(script: Script | null, url: string, at: Date): string {
-  const lines = ["Test event from Sentinel", ""];
-  const schema = script?.extractionSchema ?? { summary: "string" };
-  for (const [field, type] of Object.entries(schema)) {
-    const label = field.charAt(0).toUpperCase() + field.slice(1).replace(/_/g, " ");
-    lines.push(`${label}: ${sampleValue(field, type, url, at)}`);
-  }
-  return lines.join("\n");
-}
-
-function sampleValue(field: string, type: string, url: string, at: Date): string {
-  if (SAMPLE_VALUES[field]) return SAMPLE_VALUES[field];
-  switch (typeKind(type)) {
-    case "number":
-      return "42";
-    case "boolean":
-      return "yes";
-    case "date":
-      return at.toISOString().slice(0, 10);
-    case "url":
-      return url;
-    case "list":
-      return "first example, second example";
-    default:
-      return /url|link/.test(field) ? url : `Sample ${field.replace(/_/g, " ")}`;
-  }
 }

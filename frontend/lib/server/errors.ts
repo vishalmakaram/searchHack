@@ -1,7 +1,7 @@
 // Errors thrown by lib/server. Route handlers turn a DomainError into
 // `{ "error": message }` with its status; anything else is a 500.
 
-export type DomainErrorStatus = 400 | 403 | 404 | 409 | 413;
+export type DomainErrorStatus = 400 | 401 | 403 | 404 | 409 | 413 | 502;
 
 export class DomainError extends Error {
   readonly status: DomainErrorStatus;
@@ -24,7 +24,8 @@ export function isDomainError(error: unknown): error is DomainError {
   return (
     name === "DomainError" &&
     typeof message === "string" &&
-    (status === 400 || status === 403 || status === 404 || status === 409 || status === 413)
+    typeof status === "number" &&
+    [400, 401, 403, 404, 409, 413, 502].includes(status)
   );
 }
 

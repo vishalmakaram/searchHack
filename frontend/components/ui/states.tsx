@@ -68,7 +68,7 @@ export function NotFoundState({ what, backHref, backLabel }: { what: string; bac
           </a>
         }
       >
-        It may have been deleted, or the demo data was reset.
+        It may have been removed, or the address is mistyped.
       </EmptyState>
     </div>
   );

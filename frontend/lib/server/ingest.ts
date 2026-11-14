@@ -1,29 +1,28 @@
 // The webhook receiver's logic. The HTTP route checks the 1 MB limit, reads
 // the raw body as text and hands it here.
 //
-// 1. Record a Delivery; Telem-Webhook-Type sets its webhookType.
+// 1. Check the signature, then record a Delivery. A delivery whose signature
+//    is wrong is recorded and goes no further.
 // 2. Turn the body into events. An agent.changes envelope
 //    `{ type, monitor_id, changes[], next_cursor, watermark }` gives one event
 //    per item in `changes`; any other body is one event. No shape is rejected.
 // 3. Drop events whose seq this webhook has already seen (Telem delivers at
 //    least once). An event without a numeric seq is never a duplicate.
-// 4. For each remaining event and each routed script: an active script gets a
-//    run; any other script is recorded as skipped.
+// 4. For each remaining event that names a page, and each routed script: an
+//    active script gets a queued run; any other script is recorded as skipped.
+//    The caller starts the queue once this is saved.
 
-import type { ChangeEvent } from "@/lib/contracts";
 import type { Delivery, WebhookType } from "@/lib/types";
 import { now } from "./clock";
 import { DomainError, notFound } from "./errors";
 import { newId } from "./ids";
-import { createRun, type Random } from "./runtime";
+import { queueRun } from "./runs";
 import { mutate, type Db } from "./store";
 import { isRecord } from "./util";
 import { verifySignature } from "./verify";
 
 /** The route enforces the limit first; this is a backstop. */
 export const MAX_BODY_BYTES = 1024 * 1024;
-/** page_text longer than this is cut, to keep db.json small. */
-export const MAX_PAGE_TEXT = 20_000;
 
 export const WEBHOOK_TYPE_HEADER = "telem-webhook-type";
 
@@ -31,7 +30,11 @@ export interface ReceiveOptions {
   isTest?: boolean;
 }
 
-/** Throws 404 for an unknown webhook, 403 for a disabled one, 413 for a body over 1 MB. */
+/**
+ * Throws 404 for an unknown webhook, 403 for a disabled one, 413 for a body
+ * over 1 MB. A wrong signature is not thrown: the delivery comes back with
+ * `signature: "invalid"` and the route answers 401.
+ */
 export async function receive(
   webhookId: string,
   headers: Headers,
@@ -51,7 +54,6 @@ export function ingestInto(
   headers: Headers,
   rawBody: string,
   options: ReceiveOptions = {},
-  random?: Random,
 ): Delivery {
   const webhook = db.webhooks.find((w) => w.id === webhookId);
   if (!webhook) throw notFound("webhook", webhookId);
@@ -62,13 +64,37 @@ export function ingestInto(
   const webhookType = readWebhookType(headers, body);
   const events = extractEvents(webhookType, body);
 
+  const delivery: Delivery = {
+    id: newId("dlv"),
+    webhookId: webhook.id,
+    receivedAt: at.toISOString(),
+    webhookType,
+    // The in-app test button is not signed; there is nothing to check.
+    signature: options.isTest ? "not_checked" : verifySignature(webhook.secret, headers, rawBody),
+    isTest: options.isTest === true,
+    bodyBytes: Buffer.byteLength(rawBody, "utf8"),
+    body,
+    eventCount: events.length,
+    duplicateCount: 0,
+    eventsWithoutUrl: 0,
+    runIds: [],
+    skipped: [],
+  };
+
+  if (delivery.signature === "invalid") {
+    // Kept in the log so the mismatch is visible, but its events are not trusted:
+    // they create no runs and do not count as seen.
+    delivery.body = "(not stored: the signature did not match)";
+    db.deliveries.push(delivery);
+    return delivery;
+  }
+
   const seen = seenSeqs(db, webhook.id);
   const kept: RawEvent[] = [];
-  let duplicateCount = 0;
   for (const event of events) {
     if (event.seq !== null) {
       if (seen.has(event.seq)) {
-        duplicateCount++;
+        delivery.duplicateCount++;
         continue;
       }
       seen.add(event.seq);
@@ -76,23 +102,13 @@ export function ingestInto(
     kept.push(event);
   }
 
-  const delivery: Delivery = {
-    id: newId("dlv"),
-    webhookId: webhook.id,
-    receivedAt: at.toISOString(),
-    webhookType,
-    signature: verifySignature(webhook.secret, headers, rawBody),
-    isTest: options.isTest === true,
-    bodyBytes: Buffer.byteLength(rawBody, "utf8"),
-    body,
-    eventCount: events.length,
-    duplicateCount,
-    runIds: [],
-    skipped: [],
-  };
-
-  const targets = webhook.scriptIds.flatMap((id) => db.scripts.filter((s) => s.id === id));
+  const targets = webhook.scriptIds.map((id) => db.scripts.find((s) => s.id === id) ?? { id, name: id, status: "developed" as const });
   for (const event of kept) {
+    const url = pageUrl(event.url);
+    if (url === null) {
+      delivery.eventsWithoutUrl++;
+      continue;
+    }
     for (const script of targets) {
       if (script.status !== "active") {
         // One entry per script, not per event: the reason is the same for every event.
@@ -101,11 +117,11 @@ export function ingestInto(
         }
         continue;
       }
-      const run = createRun(script, toChangeEvent(event, script.workspaceId, delivery.receivedAt), delivery, {
+      const run = queueRun(
+        db,
+        { scriptId: script.id, scriptName: script.name, source: "webhook", url, webhookId: webhook.id, deliveryId: delivery.id },
         at,
-        random,
-      });
-      db.runs.push(run);
+      );
       delivery.runIds.push(run.id);
     }
   }
@@ -116,13 +132,10 @@ export function ingestInto(
 
 // -------------------------------------------------------------- Body parsing
 
-/** An event as read from a body, before it is addressed to a script. */
+/** An event as read from a body. */
 export interface RawEvent {
   seq: number | null;
-  kind: ChangeEvent["kind"];
   url: string;
-  page_text: string;
-  telem_run_id: string;
 }
 
 /** Parsed JSON, or the raw string when it is not JSON. */
@@ -145,9 +158,10 @@ export function readWebhookType(headers: Headers, body: unknown): WebhookType {
 
 export function extractEvents(webhookType: WebhookType, body: unknown): RawEvent[] {
   if (webhookType === "agent.changes" && isRecord(body) && Array.isArray(body.changes)) {
-    return body.changes.map((item) => readEvent(item, body));
+    return body.changes.map(readEvent);
   }
-  return [readEvent(body, null)];
+  if (isRecord(body) && Array.isArray(body.items)) return body.items.map(readEvent);
+  return [readEvent(body)];
 }
 
 /** Every numeric seq in this webhook's earlier deliveries. */
@@ -162,29 +176,14 @@ export function seenSeqs(db: Db, webhookId: string): Set<number> {
   return seen;
 }
 
-const KINDS: readonly ChangeEvent["kind"][] = ["entity_added", "value_changed", "alert"];
+const URL_KEYS = ["url", "link", "source_url", "page_url", "href"];
 
-function readEvent(item: unknown, envelope: Record<string, unknown> | null): RawEvent {
-  const envelopeRunId = envelope ? firstString(envelope, ["telem_run_id", "run_id"]) : null;
-  if (!isRecord(item)) {
-    return {
-      seq: null,
-      kind: "entity_added",
-      url: "",
-      page_text: clip(typeof item === "string" ? item : JSON.stringify(item)),
-      telem_run_id: envelopeRunId ?? "",
-    };
-  }
-  return {
-    seq: readSeq(item.seq),
-    kind: readKind(item),
-    url: firstString(item, ["url", "link", "source_url", "page_url", "href"]) ?? "",
-    page_text: clip(
-      firstString(item, ["page_text", "text", "content", "markdown", "snippet", "summary", "description"]) ??
-        JSON.stringify(item),
-    ),
-    telem_run_id: firstString(item, ["telem_run_id", "run_id"]) ?? envelopeRunId ?? "",
-  };
+function readEvent(item: unknown): RawEvent {
+  if (!isRecord(item)) return { seq: null, url: "" };
+  // Telem nests the changed entity in some change kinds; look one level down too.
+  const nested = [item.entity, item.item, item.data, item.after].filter(isRecord);
+  const url = firstString(item, URL_KEYS) ?? nested.map((n) => firstString(n, URL_KEYS)).find((u) => u !== null) ?? "";
+  return { seq: readSeq(item.seq), url };
 }
 
 function readSeq(value: unknown): number | null {
@@ -193,35 +192,21 @@ function readSeq(value: unknown): number | null {
   return null;
 }
 
-function readKind(item: Record<string, unknown>): ChangeEvent["kind"] {
-  const raw = firstString(item, ["kind", "change_type", "type"])?.toLowerCase() ?? "";
-  if ((KINDS as readonly string[]).includes(raw)) return raw as ChangeEvent["kind"];
-  if (/alert/.test(raw)) return "alert";
-  if (/chang|updat|modif|edit/.test(raw)) return "value_changed";
-  return "entity_added";
-}
-
 function firstString(record: Record<string, unknown>, keys: string[]): string | null {
   for (const key of keys) {
     const value = record[key];
-    if (typeof value === "string" && value.trim() !== "") return value;
+    if (typeof value === "string" && value.trim() !== "") return value.trim();
   }
   return null;
 }
 
-function clip(text: string | undefined): string {
-  if (text === undefined) return "";
-  return text.length > MAX_PAGE_TEXT ? `${text.slice(0, MAX_PAGE_TEXT)}…` : text;
-}
-
-function toChangeEvent(event: RawEvent, workspaceId: string, receivedAt: string): ChangeEvent {
-  return {
-    workspace_id: workspaceId,
-    seq: event.seq ?? 0,
-    kind: event.kind,
-    url: event.url,
-    page_text: event.page_text,
-    telem_run_id: event.telem_run_id,
-    received_at: receivedAt,
-  };
+/** The address as an http(s) URL, or null when the event does not name a page. */
+function pageUrl(raw: string): string | null {
+  if (raw === "") return null;
+  try {
+    const url = new URL(raw);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
 }

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DomainError } from "@/lib/server/errors";
 import { readTextWithLimit } from "./body";
 import { baseUrl, readJson, readQuery, respond } from "./http";
-import { approveWorkspaceBody, createWebhookBody, runsQuery, scriptsQuery, updateWebhookBody } from "./schemas";
+import { createWebhookBody, createWorkspaceBody, runsQuery, scriptsQuery, updateWebhookBody } from "./schemas";
 
 function post(body: BodyInit | null, headers?: HeadersInit): Request {
   return new Request("http://localhost:3100/api/x", { method: "POST", body, headers, duplex: "half" } as RequestInit);
@@ -64,15 +64,15 @@ describe("respond", () => {
 
 describe("readJson", () => {
   it("rejects an empty body, malformed JSON, unknown keys and wrong types with 400", async () => {
-    expect(await statusOf(readJson(post(""), approveWorkspaceBody))).toBe(400);
-    expect(await statusOf(readJson(post("{nope"), approveWorkspaceBody))).toBe(400);
-    expect(await statusOf(readJson(post('{"queries":["a"],"extra":1}'), approveWorkspaceBody))).toBe(400);
-    expect(await statusOf(readJson(post('{"queries":"a"}'), approveWorkspaceBody))).toBe(400);
+    expect(await statusOf(readJson(post(""), createWorkspaceBody))).toBe(400);
+    expect(await statusOf(readJson(post("{nope"), createWorkspaceBody))).toBe(400);
+    expect(await statusOf(readJson(post('{"query":"a","extra":1}'), createWorkspaceBody))).toBe(400);
+    expect(await statusOf(readJson(post('{"query":["a"]}'), createWorkspaceBody))).toBe(400);
     expect(await statusOf(readJson(post('{"enabled":"yes"}'), updateWebhookBody))).toBe(400);
   });
 
   it("passes a well-shaped body through unchanged, leaving domain rules to lib/server", async () => {
-    expect(await readJson(post('{"queries":[" a ",""]}'), approveWorkspaceBody)).toEqual({ queries: [" a ", ""] });
+    expect(await readJson(post('{"query":" a "}'), createWorkspaceBody)).toEqual({ query: " a " });
   });
 
   it("defaults webhook scriptIds to []", async () => {

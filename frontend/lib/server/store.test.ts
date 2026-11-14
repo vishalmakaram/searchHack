@@ -1,36 +1,32 @@
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { MAX_DELIVERIES, MAX_RUNS, dbPath, mutate, read, reset } from "./store";
-import { runStatusAt } from "./runtime";
-import { makeWebhook, T0, useTestStore } from "./test-helpers";
+import { MAX_DELIVERIES, MAX_RUNS, dbPath, emptyDb, mutate, read, reset } from "./store";
+import { makeRun, makeWebhook, T0, useTestStore } from "./test-helpers";
 import type { Delivery, Run } from "@/lib/types";
+
+const delivery = (i: number): Delivery => ({
+  id: `dlv_${i}`,
+  webhookId: "wh_x",
+  receivedAt: new Date(T0.getTime() - (520 - i) * 1000).toISOString(),
+  webhookType: "agent.changes",
+  signature: "not_checked",
+  isTest: false,
+  bodyBytes: 2,
+  body: {},
+  eventCount: 0,
+  duplicateCount: 0,
+  eventsWithoutUrl: 0,
+  runIds: [],
+  skipped: [],
+});
 
 describe("store", () => {
   const store = useTestStore();
 
-  it("seeds a missing file on first read", async () => {
-    const db = await read();
-    expect(db.workspaces).toHaveLength(2);
-    expect(db.webhooks).toHaveLength(2);
-    expect(db.scripts.map((s) => s.status).sort()).toEqual(["active", "active", "developed", "inactive"]);
-    expect(db.deliveries).toHaveLength(15);
-    expect(db.runs).toHaveLength(30);
-
-    const statuses = db.runs.map((r) => runStatusAt(r, T0));
-    expect(statuses.every((s) => s === "succeeded" || s === "invalid" || s === "failed")).toBe(true);
-    expect(statuses.filter((s) => s === "failed").length).toBeGreaterThan(0);
-    expect(statuses.filter((s) => s === "invalid").length).toBeGreaterThan(0);
-    expect(db.runs.every((r) => Date.parse(r.queuedAt) > T0.getTime() - 24 * 3600_000)).toBe(true);
-
-    const onDisk = JSON.parse(await readFile(dbPath(), "utf8"));
-    expect(onDisk.workspaces.map((w: { id: string }) => w.id)).toEqual(db.workspaces.map((w) => w.id));
-  });
-
-  it("seeds only once when first reads race", async () => {
-    const [a, b, c] = await Promise.all([read(), read(), read()]);
-    expect(b.workspaces.map((w) => w.id)).toEqual(a.workspaces.map((w) => w.id));
-    expect(c.workspaces.map((w) => w.id)).toEqual(a.workspaces.map((w) => w.id));
+  it("starts empty and creates the file on first read", async () => {
+    expect(await read()).toEqual(emptyDb());
+    expect(JSON.parse(await readFile(dbPath(), "utf8"))).toEqual(emptyDb());
   });
 
   it("applies concurrent mutations one at a time", async () => {
@@ -41,46 +37,38 @@ describe("store", () => {
         }),
       ),
     );
-    const names = (await read()).webhooks.map((w) => w.name).slice(2);
-    expect(names).toEqual(Array.from({ length: 20 }, (_, i) => `hook ${i + 2}`));
+    const names = (await read()).webhooks.map((w) => w.name);
+    expect(names).toEqual(Array.from({ length: 20 }, (_, i) => `hook ${i}`));
   });
 
   it("saves nothing when a mutation throws, and keeps going", async () => {
-    await read();
+    await mutate((db) => void db.webhooks.push(makeWebhook([])));
     await expect(
       mutate((db) => {
         db.webhooks = [];
         throw new Error("boom");
       }),
     ).rejects.toThrow("boom");
-    expect((await read()).webhooks).toHaveLength(2);
-    await expect(mutate((db) => db.webhooks.length)).resolves.toBe(2);
+    expect((await read()).webhooks).toHaveLength(1);
+    await expect(mutate((db) => db.webhooks.length)).resolves.toBe(1);
   });
 
   it("refuses an async mutation without saving it", async () => {
-    await read();
+    await mutate((db) => void db.webhooks.push(makeWebhook([])));
     await expect(
       mutate(async (db) => {
         db.webhooks = [];
       }),
     ).rejects.toThrow(TypeError);
-    expect((await read()).webhooks).toHaveLength(2);
+    expect((await read()).webhooks).toHaveLength(1);
   });
 
   it("keeps only the newest 500 deliveries and runs", async () => {
     await mutate((db) => {
-      const base = db.deliveries[0];
-      const run = db.runs[0];
-      db.deliveries = Array.from({ length: 520 }, (_, i): Delivery => ({
-        ...base,
-        id: `dlv_${i}`,
-        receivedAt: new Date(T0.getTime() - (520 - i) * 1000).toISOString(),
-      }));
-      db.runs = Array.from({ length: 510 }, (_, i): Run => ({
-        ...run,
-        id: `run_${i}`,
-        queuedAt: new Date(T0.getTime() - (510 - i) * 1000).toISOString(),
-      }));
+      db.deliveries = Array.from({ length: 520 }, (_, i) => delivery(i));
+      db.runs = Array.from({ length: 510 }, (_, i): Run =>
+        makeRun("ws_x", { id: `run_${i}`, queuedAt: new Date(T0.getTime() - (510 - i) * 1000).toISOString() }),
+      );
     });
     const db = await read();
     expect(db.deliveries).toHaveLength(MAX_DELIVERIES);
@@ -90,15 +78,10 @@ describe("store", () => {
     expect(db.runs[0].id).toBe("run_10");
   });
 
-  it("reset wipes and reseeds", async () => {
-    const before = await read();
-    await mutate((db) => {
-      db.workspaces = [];
-    });
+  it("reset empties the store", async () => {
+    await mutate((db) => void db.webhooks.push(makeWebhook([])));
     await reset();
-    const after = await read();
-    expect(after.workspaces).toHaveLength(2);
-    expect(after.workspaces[0].id).not.toBe(before.workspaces[0].id);
+    expect(await read()).toEqual(emptyDb());
   });
 
   it("writes through a temp file and leaves none behind", async () => {
@@ -107,11 +90,15 @@ describe("store", () => {
     expect(await readdir(store.dir())).toEqual(["db.json"]);
   });
 
-  it("moves a corrupt file aside and reseeds", async () => {
+  it("moves a corrupt file aside and starts empty", async () => {
     await writeFile(dbPath(), "{ not json", "utf8");
-    const db = await read();
-    expect(db.workspaces).toHaveLength(2);
+    expect(await read()).toEqual(emptyDb());
     const files = await readdir(path.dirname(dbPath()));
     expect(files.some((f) => f.startsWith("db.json.corrupt-"))).toBe(true);
+  });
+
+  it("reads a file from the earlier mock version without its old collections", async () => {
+    await writeFile(dbPath(), JSON.stringify({ workspaces: [{ id: "ws_old" }], webhooks: [] }), "utf8");
+    expect(await read()).toEqual(emptyDb());
   });
 });

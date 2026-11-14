@@ -1,6 +1,6 @@
 import { connection } from "next/server";
 import { respond } from "@/app/api/_lib/http";
-import { getRun } from "@/lib/server/runtime";
+import { getRun } from "@/lib/server/runs";
 
 export async function GET(_req: Request, ctx: RouteContext<"/api/runs/[id]">) {
   await connection();

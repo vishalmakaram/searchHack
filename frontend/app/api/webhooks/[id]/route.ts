@@ -11,13 +11,13 @@ export async function GET(req: Request, ctx: Ctx) {
   return respond(() => getWebhook(id, baseUrl(req)));
 }
 
-/** Edits name, enabled or scriptIds. */
+/** Edits name, enabled, scriptIds or the signing secret. */
 export async function PATCH(req: Request, ctx: Ctx) {
   const { id } = await ctx.params;
   return respond(async () => updateWebhook(id, await readJson(req, updateWebhookBody), baseUrl(req)));
 }
 
-/** Also deletes the webhook's deliveries; the runs it produced stay with their scripts. */
+/** Also deletes the webhook's deliveries; the runs it produced stay in the run log. */
 export async function DELETE(_req: Request, ctx: Ctx) {
   const { id } = await ctx.params;
   return respond(async () => {

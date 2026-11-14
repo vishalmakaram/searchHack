@@ -7,7 +7,10 @@
 // - Mutations run one at a time through a promise chain kept on globalThis,
 //   which (unlike module state) is shared by every reloaded copy of this
 //   module in the process.
-// - A missing file is seeded on first use.
+// - A missing file starts empty.
+//
+// It holds only what the Python services do not: each script's switch, the
+// webhooks, the deliveries they received and the run log.
 //
 // The /* turbopackIgnore: true */ comments stop `next build` from tracing the
 // whole project into the server output because of these runtime paths.
@@ -15,13 +18,11 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Delivery, Run, Script, Webhook, Workspace } from "@/lib/types";
-import { now } from "./clock";
+import type { Delivery, Run, ScriptRecord, Webhook } from "@/lib/types";
 import { newestFirst } from "./util";
 
 export interface Db {
-  workspaces: Workspace[];
-  scripts: Script[];
+  scripts: ScriptRecord[];
   webhooks: Webhook[];
   deliveries: Delivery[];
   runs: Run[];
@@ -38,7 +39,7 @@ export async function read(): Promise<Db> {
   try {
     return normalize(JSON.parse(await readFile(/* turbopackIgnore: true */ file, "utf8")));
   } catch {
-    // Missing or unreadable: let the queue seed or repair it, once.
+    // Missing or unreadable: let the queue create or repair it, once.
     return enqueue(() => loadOrSeed(file));
   }
 }
@@ -61,15 +62,15 @@ export function mutate<T>(fn: (db: Db) => T): Promise<T> {
   });
 }
 
-/** Wipe and reseed. */
+/** Empties the local store. The runtime's workspaces are not touched. */
 export function reset(): Promise<void> {
   return enqueue(async () => {
-    await writeDb(dbPath(), await buildSeedDb());
+    await writeDb(dbPath(), emptyDb());
   });
 }
 
 export function emptyDb(): Db {
-  return { workspaces: [], scripts: [], webhooks: [], deliveries: [], runs: [] };
+  return { scripts: [], webhooks: [], deliveries: [], runs: [] };
 }
 
 // ------------------------------------------------------------- Test support
@@ -99,14 +100,14 @@ function enqueue<T>(task: () => Promise<T>): Promise<T> {
   return next;
 }
 
-/** Call only from inside the queue. */
+/** Call only from inside the queue. Creates the file when it is missing. */
 async function loadOrSeed(file: string): Promise<Db> {
   let text: string;
   try {
     text = await readFile(/* turbopackIgnore: true */ file, "utf8");
   } catch (error) {
     if (!isMissingFile(error)) throw error;
-    const db = await buildSeedDb();
+    const db = emptyDb();
     await writeDb(file, db);
     return db;
   }
@@ -116,8 +117,8 @@ async function loadOrSeed(file: string): Promise<Db> {
     // A hand-edited or otherwise broken file: keep it aside and start over.
     const aside = `${file}.corrupt-${Date.now()}`;
     await rename(/* turbopackIgnore: true */ file, aside);
-    console.warn(`[store] ${file} was not valid JSON; moved it to ${aside} and reseeded.`);
-    const db = await buildSeedDb();
+    console.warn(`[store] ${file} was not valid JSON; moved it to ${aside} and started empty.`);
+    const db = emptyDb();
     await writeDb(file, db);
     return db;
   }
@@ -133,13 +134,6 @@ async function writeDb(file: string, db: Db): Promise<void> {
     await unlink(/* turbopackIgnore: true */ temp).catch(() => undefined);
     throw error;
   }
-}
-
-async function buildSeedDb(): Promise<Db> {
-  // Imported lazily: seed.ts builds runs with runtime.ts, which reads this
-  // module, so a static import would be a cycle.
-  const { buildSeed } = await import("./seed");
-  return capped(buildSeed(now()));
 }
 
 function capped(db: Db): Db {
@@ -161,8 +155,7 @@ function normalize(value: unknown): Db {
   const raw = value as Partial<Record<keyof Db, unknown>>;
   const list = <T>(key: keyof Db): T[] => (Array.isArray(raw[key]) ? (raw[key] as T[]) : []);
   return {
-    workspaces: list<Workspace>("workspaces"),
-    scripts: list<Script>("scripts"),
+    scripts: list<ScriptRecord>("scripts"),
     webhooks: list<Webhook>("webhooks"),
     deliveries: list<Delivery>("deliveries"),
     runs: list<Run>("runs"),

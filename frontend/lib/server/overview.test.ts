@@ -1,93 +1,114 @@
-import { describe, expect, it } from "vitest";
-import type { ChangeEvent } from "@/lib/contracts";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as output from "@/lib/backend/output";
+import * as runtime from "@/lib/backend/runtime";
+import { receive } from "./ingest";
 import { getOverview, worstHealth } from "./overview";
-import { createRun } from "./runtime";
-import { mutate, read } from "./store";
-import { advance, setDb, setupPipeline, T0, useTestStore } from "./test-helpers";
-import { sendTestEvent } from "./webhooks";
+import { drainRuns } from "./runs";
+import { advance, jsonHeaders, makeRecord, makeRun, rawWorkspace, setDb, setupPipeline, T0, useTestStore } from "./test-helpers";
 
-const health = (overview: Awaited<ReturnType<typeof getOverview>>) =>
-  Object.fromEntries(overview.stages.map((s) => [s.key, s.health]));
+vi.mock("@/lib/backend/runtime");
+vi.mock("@/lib/backend/output");
+vi.mock("@/lib/backend/config", () => ({ runtimeUrl: () => "http://runtime.test", outputUrl: () => "http://output.test" }));
+const rt = vi.mocked(runtime);
+const out = vi.mocked(output);
 
-describe("overview", () => {
+function servicesUp(...workspaces: runtime.RawWorkspace[]) {
+  rt.isUp.mockResolvedValue(true);
+  rt.listWorkspaceIds.mockResolvedValue(workspaces.map((w) => w.id));
+  rt.getWorkspace.mockImplementation(async (id) => workspaces.find((w) => w.id === id) ?? null);
+  out.capabilities.mockResolvedValue({ service: "x", outputs: [{ name: "slack", configured: false }, { name: "local_alert_feed", configured: true }] });
+}
+
+const stageOf = (overview: Awaited<ReturnType<typeof getOverview>>, key: string) => overview.stages.find((s) => s.key === key)!;
+
+describe("getOverview", () => {
   useTestStore();
+  beforeEach(() => vi.resetAllMocks());
 
-  it("summarises the seed", async () => {
-    const overview = await getOverview();
-    expect(overview.stages.map((s) => s.key)).toEqual(["ingest", "dispatch", "processing", "results"]);
-    expect(overview.scriptCounts).toEqual({ developed: 1, active: 2, inactive: 1 });
-    expect(overview.runsInFlight).toEqual([]);
-    expect(overview.recentDeliveries).toHaveLength(10);
-    expect(overview.recentProblems.length).toBeGreaterThan(0);
-    expect(overview.recentProblems.every((r) => r.status === "failed" || r.status === "invalid")).toBe(true);
-    expect(overview.health).toBe("ok");
-    expect(overview.stages.every((s) => s.metrics.length >= 2)).toBe(true);
-  });
-
-  it("is idle with nothing in the last hour", async () => {
-    await setDb({});
+  it("is idle with nothing in the log", async () => {
+    servicesUp(rawWorkspace("ws_ready"), rawWorkspace("ws_building", { status: "creating" }));
     const overview = await getOverview();
     expect(overview.health).toBe("idle");
-    expect(Object.values(health(overview))).toEqual(["idle", "idle", "idle", "idle"]);
+    expect(overview.stages.map((s) => [s.key, s.health])).toEqual([
+      ["ingest", "idle"],
+      ["dispatch", "idle"],
+      ["processing", "idle"],
+      ["delivery", "idle"],
+    ]);
+    expect(overview.services).toEqual([
+      { key: "runtime", label: "Sentinel runtime", url: "http://runtime.test", up: true },
+      { key: "output", label: "Output service", url: "http://output.test", up: true },
+    ]);
+    expect(overview.channels).toEqual([{ name: "slack", configured: false }, { name: "local_alert_feed", configured: true }]);
+    expect(overview.scriptCounts).toEqual({ developed: 1, active: 0, inactive: 0 });
+    expect(overview.building.map((w) => w.id)).toEqual(["ws_building"]);
+  });
+
+  it("needs attention when a service is down, and still answers", async () => {
+    rt.isUp.mockResolvedValue(false);
+    rt.listWorkspaceIds.mockRejectedValue(new Error("down"));
+    out.capabilities.mockRejectedValue(new Error("down"));
+    const overview = await getOverview();
+    expect(overview.health).toBe("attention");
+    expect(overview.services.map((s) => s.up)).toEqual([false, false]);
+    expect(overview.channels).toEqual([]);
+    expect(overview.building).toEqual([]);
   });
 
   it("follows a delivery through the stages", async () => {
-    const { webhook } = await setupPipeline("active");
-    await sendTestEvent(webhook.id);
+    const { webhook, raw } = await setupPipeline("active");
+    servicesUp(raw);
+    let release = () => {};
+    rt.runUrl.mockImplementation(
+      () => new Promise((resolve) => (release = () => resolve({ ok: true, delivery: { ok: true } }))),
+    );
 
+    await receive(webhook.id, jsonHeaders("agent.changes"), JSON.stringify({ type: "agent.changes", changes: [{ seq: 1, url: "https://a.example/1" }, { seq: 1, url: "https://a.example/1" }] }));
     let overview = await getOverview();
-    expect(health(overview)).toMatchObject({ ingest: "busy", dispatch: "busy" });
+    expect(stageOf(overview, "ingest")).toMatchObject({ health: "busy", metrics: [{ value: "1" }, { value: "2" }, { value: "just now" }] });
+    expect(stageOf(overview, "dispatch").metrics.map((m) => m.value)).toEqual(["1", "0", "1"]);
+    expect(overview.scriptCounts.active).toBe(1);
+
+    // getOverview picked the queued run up; it is now with the runtime.
+    await vi.waitFor(() => expect(rt.runUrl).toHaveBeenCalled());
+    advance(20_000);
+    overview = await getOverview();
+    expect(stageOf(overview, "processing").health).toBe("busy");
     expect(overview.runsInFlight).toHaveLength(1);
     expect(overview.health).toBe("busy");
 
-    const run = (await read()).runs[0];
-    advance(Date.parse(run.startsAt) - T0.getTime());
+    release();
+    await drainRuns();
     overview = await getOverview();
-    expect(health(overview)).toMatchObject({ dispatch: "ok", processing: "busy" });
-
-    advance(Date.parse(run.finishesAt) - Date.parse(run.startsAt) + 10_000);
-    overview = await getOverview();
+    expect(stageOf(overview, "delivery")).toMatchObject({ health: "ok", metrics: [{ value: "1" }, { value: "0" }, { value: "0" }] });
+    expect(stageOf(overview, "processing").metrics[2].value).toBe("20.0 s");
     expect(overview.runsInFlight).toEqual([]);
-    expect(health(overview)).toMatchObject({ ingest: "ok", dispatch: "ok", processing: "ok" });
-    expect(["ok", "attention"]).toContain(health(overview).results);
+    expect(overview.health).toBe("ok");
   });
 
-  it("needs attention after a failed or invalid run in the last hour", async () => {
-    const { script, webhook } = await setupPipeline("active");
-    const event: ChangeEvent = {
-      workspace_id: "",
-      seq: 1,
-      kind: "alert",
-      url: "",
-      page_text: "",
-      telem_run_id: "",
-      received_at: T0.toISOString(),
-    };
-    await mutate((db) => {
-      db.runs.push(createRun(script, event, { id: "d", webhookId: webhook.id }, { outcome: "invalid", at: new Date(T0.getTime() - 20 * 60_000) }));
+  it("flags failed runs and wrong signatures, and lists recent problems", async () => {
+    servicesUp(rawWorkspace());
+    const at = new Date(T0.getTime() - 60_000).toISOString();
+    await setDb({
+      scripts: [makeRecord("ws_test000001", "active")],
+      runs: [makeRun("ws_test000001", { id: "run_bad", status: "failed", error: "boom", startedAt: at, finishedAt: at })],
+      deliveries: [
+        { id: "dlv_1", webhookId: "wh_1", receivedAt: at, webhookType: "unknown", signature: "invalid", isTest: false, bodyBytes: 0, body: "", eventCount: 1, duplicateCount: 0, eventsWithoutUrl: 0, runIds: [], skipped: [] },
+      ],
     });
     const overview = await getOverview();
-    expect(health(overview).results).toBe("attention");
+    expect(stageOf(overview, "ingest").health).toBe("attention");
+    expect(stageOf(overview, "delivery").health).toBe("attention");
     expect(overview.health).toBe("attention");
-    expect(overview.recentProblems).toHaveLength(1);
-
-    advance(61 * 60_000);
-    expect(health(await getOverview()).results).toBe("idle");
+    expect(overview.recentProblems.map((r) => r.id)).toEqual(["run_bad"]);
+    expect(overview.recentDeliveries).toHaveLength(1);
   });
+});
 
-  it("needs attention on ingest after an invalid signature", async () => {
-    const { webhook } = await setupPipeline("active");
-    await sendTestEvent(webhook.id);
-    await mutate((db) => {
-      db.deliveries[0].signature = "invalid";
-    });
-    expect(health(await getOverview()).ingest).toBe("attention");
-  });
-
-  it("ranks health attention > busy > ok > idle", () => {
-    expect(worstHealth(["idle", "ok"])).toBe("ok");
-    expect(worstHealth(["ok", "busy", "idle"])).toBe("busy");
-    expect(worstHealth(["busy", "attention"])).toBe("attention");
+describe("worstHealth", () => {
+  it("ranks attention over busy over ok over idle", () => {
+    expect(worstHealth(["idle", "ok", "busy"])).toBe("busy");
+    expect(worstHealth(["ok", "attention", "busy"])).toBe("attention");
     expect(worstHealth([])).toBe("idle");
   });
 });

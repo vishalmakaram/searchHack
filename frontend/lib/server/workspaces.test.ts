@@ -1,215 +1,107 @@
-import { describe, expect, it } from "vitest";
-import type { ChangeEvent } from "@/lib/contracts";
-import type { Workspace } from "@/lib/types";
-import { createRun } from "./runtime";
-import { read } from "./store";
-import {
-  advance,
-  makeScript,
-  makeWebhook,
-  makeWorkspace,
-  setDb,
-  T0,
-  useTestStore,
-} from "./test-helpers";
-import {
-  approveWorkspace,
-  createWorkspace,
-  deleteWorkspace,
-  getWorkspace,
-  listWorkspaces,
-  updateWorkspace,
-  workspaceStatusAt,
-} from "./workspaces";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as output from "@/lib/backend/output";
+import * as runtime from "@/lib/backend/runtime";
+import { makeRecord, rawWorkspace, setDb, T0, useTestStore } from "./test-helpers";
+import { createWorkspace, getWorkspace, getWorkspaceOutput, listWorkspaces, workspaceName } from "./workspaces";
 
-describe("workspace status", () => {
-  const ws: Workspace = makeWorkspace({
-    createdAt: T0.toISOString(),
-    compileReadyAt: new Date(T0.getTime() + 4000).toISOString(),
-  });
-  const at = (ms: number) => new Date(T0.getTime() + ms);
+vi.mock("@/lib/backend/runtime");
+vi.mock("@/lib/backend/output");
+const rt = vi.mocked(runtime);
+const out = vi.mocked(output);
 
-  it("is compiling until compileReadyAt, then awaiting approval", () => {
-    expect(workspaceStatusAt(ws, at(0))).toBe("compiling");
-    expect(workspaceStatusAt(ws, at(3999))).toBe("compiling");
-    expect(workspaceStatusAt(ws, at(4000))).toBe("awaiting_approval");
-  });
+function serve(...workspaces: runtime.RawWorkspace[]) {
+  rt.listWorkspaceIds.mockResolvedValue(workspaces.map((w) => w.id));
+  rt.getWorkspace.mockImplementation(async (id) => workspaces.find((w) => w.id === id) ?? null);
+}
 
-  it("is ready once approved", () => {
-    expect(workspaceStatusAt({ ...ws, approvedAt: at(5000).toISOString() }, at(6000))).toBe("ready");
+describe("workspaceName", () => {
+  it("uses the start of the query, cut at a word", () => {
+    expect(workspaceName("ws_1", "  Watch   IBM filings ")).toBe("Watch IBM filings");
+    expect(workspaceName("ws_1", null)).toBe("ws_1");
+    const long = workspaceName("ws_1", "Tell me whenever any of the large European cloud providers changes the price of a plan");
+    expect(long.length).toBeLessThanOrEqual(65);
+    expect(long.endsWith("…")).toBe(true);
+    expect(long).not.toMatch(/\s…$/);
   });
 });
 
 describe("workspaces", () => {
   useTestStore();
+  beforeEach(() => vi.resetAllMocks());
 
-  it("creates a compiling workspace with proposed queries and schema", async () => {
-    await setDb({});
-    const ws = await createWorkspace({ intent: "  Tell me when Acme Cloud changes its pricing.  " });
-    expect(ws.status).toBe("compiling");
-    expect(ws.id).toMatch(/^ws_[0-9a-z]{12}$/);
-    expect(ws.intent).toBe("Tell me when Acme Cloud changes its pricing.");
-    expect(ws.name).toBe("Acme Cloud changes its pricing");
-    expect(ws.queries.length).toBeGreaterThanOrEqual(3);
-    expect(ws.queries.length).toBeLessThanOrEqual(5);
-    expect(ws.queries.every((q) => q.id.startsWith("q_"))).toBe(true);
-    expect(ws.extractionSchema).toHaveProperty("new_price");
-    expect(ws.scriptId).toBeNull();
-    expect(ws.approvedAt).toBeNull();
-    expect(ws.compileReadyAt).toBe(new Date(T0.getTime() + 4000).toISOString());
+  it("maps the runtime's statuses and puts builds first, result folders last", async () => {
+    serve(
+      { id: "demo_ws", status: {}, memory: "" },
+      rawWorkspace("ws_ready"),
+      rawWorkspace("ws_failed", { status: "failed", error: "Telem search failed", built_at: undefined }),
+      rawWorkspace("ws_building", { status: "creating", built_at: undefined, created_at: T0.getTime() / 1000 - 5 }),
+    );
+    await setDb({ scripts: [makeRecord("ws_ready", "active")] });
 
-    advance(4000);
-    expect((await getWorkspace(ws.id)).status).toBe("awaiting_approval");
+    const list = await listWorkspaces();
+    expect(list.map((w) => [w.id, w.status])).toEqual([
+      ["ws_building", "building"],
+      ["ws_failed", "failed"],
+      ["ws_ready", "ready"],
+      ["demo_ws", "output_only"],
+    ]);
+    expect(list[1]).toMatchObject({ error: "Telem search failed", scriptStatus: null, builtAt: null });
+    expect(list[2]).toMatchObject({ scriptStatus: "active", error: null, builtAt: new Date(T0.getTime() - 60_000).toISOString() });
+    expect(list[3]).toMatchObject({ name: "demo_ws", query: null, createdAt: null });
   });
 
-  it("rejects an empty intent", async () => {
-    await expect(createWorkspace({ intent: "   " })).rejects.toMatchObject({ status: 400 });
-  });
-
-  it("lists newest first", async () => {
-    await setDb({});
-    const first = await createWorkspace({ intent: "first thing" });
-    advance(1000);
-    const second = await createWorkspace({ intent: "second thing" });
-    expect((await listWorkspaces()).map((w) => w.id)).toEqual([second.id, first.id]);
-  });
-
-  it("approves: saves the queries, creates a developed script, sets scriptId and approvedAt", async () => {
-    await setDb({});
-    const ws = await createWorkspace({ intent: "Watch for new staff engineer jobs at Northwind" });
-    await expect(approveWorkspace(ws.id, { queries: ["a"] })).rejects.toMatchObject({ status: 409 });
-
-    advance(4000);
-    const keptId = ws.queries[0].id;
-    const approved = await approveWorkspace(ws.id, { queries: [ws.queries[0].text, "  extra   query ", "", "Extra query"] });
-    expect(approved.status).toBe("ready");
-    expect(approved.approvedAt).toBe(new Date(T0.getTime() + 4000).toISOString());
-    expect(approved.queries.map((q) => q.text)).toEqual([ws.queries[0].text, "extra query"]);
-    expect(approved.queries[0].id).toBe(keptId);
-
-    const db = await read();
-    expect(db.scripts).toHaveLength(1);
-    const script = db.scripts[0];
-    expect(approved.scriptId).toBe(script.id);
-    expect(script).toMatchObject({
-      workspaceId: ws.id,
-      status: "developed",
-      deployedAt: null,
-      version: 1,
-      extractionSchema: ws.extractionSchema,
+  it("returns memory and the build check with one workspace", async () => {
+    serve(rawWorkspace("ws_ready", { monitor_id: "mon_1", seen_urls: ["a", "b"], seq: 3 }));
+    expect(await getWorkspace("ws_ready")).toMatchObject({
+      memory: "# Memory: Acme Cloud pricing\n",
+      sampleUrl: "https://acme.example/pricing",
+      buildCheck: { ok: true, durationMs: 120, error: null },
+      scriptStatus: "developed",
+      monitorId: "mon_1",
+      pagesSeen: 2,
+      resultsHandled: 3,
     });
-    expect(script.source).toContain("def process");
-
-    await expect(approveWorkspace(ws.id, { queries: ["again"] })).rejects.toMatchObject({ status: 409 });
-    expect((await read()).scripts).toHaveLength(1);
+    await expect(getWorkspace("ws_missing")).rejects.toMatchObject({ status: 404 });
   });
 
-  it("refuses to approve with no queries, or an unknown id", async () => {
-    await setDb({});
-    const ws = await createWorkspace({ intent: "anything" });
-    advance(4000);
-    await expect(approveWorkspace(ws.id, { queries: [] })).rejects.toMatchObject({ status: 400 });
-    await expect(approveWorkspace(ws.id, { queries: ["  ", ""] })).rejects.toMatchObject({ status: 400 });
-    await expect(approveWorkspace("ws_missing", { queries: ["a"] })).rejects.toMatchObject({ status: 404 });
+  it("starts a build with the cleaned query", async () => {
+    rt.createWorkspace.mockResolvedValue("ws_new");
+    serve(rawWorkspace("ws_new", { status: "creating", query: "Watch IBM", built_at: undefined }));
+    expect(await createWorkspace({ query: "  Watch   IBM " })).toMatchObject({ id: "ws_new", status: "building", name: "Watch IBM" });
+    expect(rt.createWorkspace).toHaveBeenCalledWith("Watch IBM");
+
+    await expect(createWorkspace({ query: "   " })).rejects.toMatchObject({ status: 400 });
+    await expect(createWorkspace({ query: "x".repeat(501) })).rejects.toMatchObject({ status: 400 });
+    expect(rt.createWorkspace).toHaveBeenCalledTimes(1);
   });
 
-  it("edits name, queries and frequency before approval", async () => {
-    await setDb({});
-    const ws = await createWorkspace({ intent: "anything at all" });
-    advance(4000);
-    const updated = await updateWorkspace(ws.id, {
-      name: "Renamed",
-      queries: [ws.queries[1].text, "new one"],
-      frequency: "12h",
-    });
-    expect(updated).toMatchObject({ name: "Renamed", frequency: "12h", status: "awaiting_approval" });
-    expect(updated.queries.map((q) => q.text)).toEqual([ws.queries[1].text, "new one"]);
-    expect(updated.queries[0].id).toBe(ws.queries[1].id);
+  it("reads alerts, counts and the research document from the output service", async () => {
+    serve({ id: "demo_ws", status: {}, memory: "" });
+    out.stats.mockResolvedValue({ total_received: 3, total_alerts_delivered: 1, total_suppressed: 2, doc_entries: 1 });
+    out.researchDoc.mockResolvedValue("# Living research");
+    out.alerts.mockResolvedValue([
+      { seq: 1, timestamp: "2026-11-14 21:47:23Z", suppressed: false, suppression_reason: "approved", event_type: "8-K Filing", impact: "HIGH", summary: "s", source_url: "https://sec.gov/x", confidence: 0.96 },
+      { seq: 2, timestamp: "garbage", suppressed: true, suppression_reason: "Duplicate event key", impact: "low" },
+    ]);
+
+    const result = await getWorkspaceOutput("demo_ws");
+    expect(result).toMatchObject({ available: true, doc: "# Living research", stats: { received: 3, delivered: 1, suppressed: 2, docEntries: 1 } });
+    expect(result.alerts.map((a) => a.seq)).toEqual([2, 1]);
+    expect(result.alerts[1]).toMatchObject({ delivered: true, reason: "", impact: "high", at: "2026-11-14T21:47:23.000Z" });
+    expect(result.alerts[0]).toMatchObject({ delivered: false, reason: "Duplicate event key", at: null, confidence: null });
   });
 
-  it("freezes queries and frequency once approved, but not the name", async () => {
-    await setDb({});
-    const ws = await createWorkspace({ intent: "anything at all" });
-    advance(4000);
-    const approved = await approveWorkspace(ws.id, { queries: ["one", "two"] });
-
-    await expect(updateWorkspace(ws.id, { queries: ["three"] })).rejects.toMatchObject({ status: 409 });
-    await expect(updateWorkspace(ws.id, { frequency: approved.frequency === "1h" ? "6h" : "1h" })).rejects.toMatchObject({
-      status: 409,
-    });
-    // Sending the unchanged values is not a change.
-    await expect(
-      updateWorkspace(ws.id, { queries: ["one", "two"], frequency: approved.frequency }),
-    ).resolves.toMatchObject({ status: "ready" });
-    await expect(updateWorkspace(ws.id, { name: "Still editable" })).resolves.toMatchObject({ name: "Still editable" });
+  it("does not ask the output service about a workspace that does not exist", async () => {
+    serve();
+    await expect(getWorkspaceOutput("ws_missing")).rejects.toMatchObject({ status: 404 });
+    expect(out.stats).not.toHaveBeenCalled();
   });
 
-  it("validates edits", async () => {
-    await setDb({});
-    const ws = await createWorkspace({ intent: "anything at all" });
-    await expect(updateWorkspace(ws.id, { name: " " })).rejects.toMatchObject({ status: 400 });
-    await expect(updateWorkspace(ws.id, { queries: [] })).rejects.toMatchObject({ status: 400 });
-    // @ts-expect-error: checking the runtime guard
-    await expect(updateWorkspace(ws.id, { frequency: "2h" })).rejects.toMatchObject({ status: 400 });
-    await expect(updateWorkspace("ws_missing", { name: "x" })).rejects.toMatchObject({ status: 404 });
-  });
-
-  it("deleting cascades to its scripts, their runs and webhook routing, but keeps deliveries", async () => {
-    const doomed = makeWorkspace({ name: "Doomed" });
-    const kept = makeWorkspace({ name: "Kept" });
-    const doomedLive = makeScript(doomed, "active");
-    const doomedOld = makeScript(doomed, "inactive");
-    const keptScript = makeScript(kept, "active");
-    doomed.scriptId = doomedLive.id;
-    kept.scriptId = keptScript.id;
-    const webhook = makeWebhook([doomedLive.id, keptScript.id, doomedOld.id]);
-    const delivery = { id: "dlv_1", webhookId: webhook.id };
-    const event: ChangeEvent = {
-      workspace_id: "",
-      seq: 1,
-      kind: "entity_added",
-      url: "",
-      page_text: "",
-      telem_run_id: "",
-      received_at: T0.toISOString(),
-    };
-    const runs = [
-      createRun(doomedLive, event, delivery),
-      createRun(doomedOld, event, delivery),
-      createRun(keptScript, event, delivery),
-    ];
-    const stored = {
-      id: "dlv_1",
-      webhookId: webhook.id,
-      receivedAt: T0.toISOString(),
-      webhookType: "unknown" as const,
-      signature: "not_checked" as const,
-      isTest: false,
-      bodyBytes: 2,
-      body: {},
-      eventCount: 1,
-      duplicateCount: 0,
-      runIds: runs.map((r) => r.id),
-      skipped: [],
-    };
-    await setDb({
-      workspaces: [doomed, kept],
-      scripts: [doomedLive, doomedOld, keptScript],
-      webhooks: [webhook],
-      deliveries: [stored],
-      runs,
-    });
-
-    await deleteWorkspace(doomed.id);
-
-    const db = await read();
-    expect(db.workspaces.map((w) => w.id)).toEqual([kept.id]);
-    expect(db.scripts.map((s) => s.id)).toEqual([keptScript.id]);
-    expect(db.runs.map((r) => r.scriptId)).toEqual([keptScript.id]);
-    expect(db.webhooks[0].scriptIds).toEqual([keptScript.id]);
-    expect(db.deliveries).toHaveLength(1);
-
-    await expect(getWorkspace(doomed.id)).rejects.toMatchObject({ status: 404 });
-    await expect(deleteWorkspace(doomed.id)).rejects.toMatchObject({ status: 404 });
+  it("reports the output service being down without failing", async () => {
+    serve(rawWorkspace("ws_ready"));
+    out.stats.mockRejectedValue(new Error("down"));
+    out.alerts.mockResolvedValue([]);
+    out.researchDoc.mockResolvedValue("");
+    expect(await getWorkspaceOutput("ws_ready")).toEqual({ available: false, stats: null, alerts: [], doc: "" });
   });
 });

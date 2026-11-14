@@ -3,7 +3,8 @@
 // A folder whose name starts with an underscore is not routed, so nothing in
 // here is reachable over HTTP. Handlers stay thin: validate the input, call
 // lib/server, and hand the work to `respond`, which serialises the result and
-// turns a DomainError into `{ "error": message }` with the error's status.
+// turns a DomainError into `{ "error": message }` with the error's status. A
+// failed call to one of the Python services becomes a 502 with its message.
 
 import { unstable_rethrow } from "next/navigation";
 import type { z } from "zod";
@@ -33,8 +34,14 @@ export function errorResponse(error: unknown): Response {
   unstable_rethrow(error);
   // isDomainError, not instanceof: a dev-server reload can leave two copies of the class loaded.
   if (isDomainError(error)) return fail(error.status, error.message);
+  if (isBackendError(error)) return fail(502, error.message);
   console.error("[api] unhandled error:", error);
   return fail(500, "Internal server error.");
+}
+
+/** By shape, for the same reason as isDomainError. */
+function isBackendError(error: unknown): error is Error {
+  return error instanceof Error && error.name === "BackendError" && error.message !== "";
 }
 
 export function fail(status: number, message: string): Response {

@@ -83,18 +83,6 @@ export function plural(count: number, singular: string, pluralForm = `${singular
   return `${count} ${count === 1 ? singular : pluralForm}`;
 }
 
-const FREQUENCY_LABELS: Record<string, string> = {
-  "1h": "Every hour",
-  "6h": "Every 6 hours",
-  "12h": "Every 12 hours",
-  "1d": "Every day",
-  "7d": "Every week",
-};
-
-export function frequencyLabel(frequency: string): string {
-  return FREQUENCY_LABELS[frequency] ?? frequency;
-}
-
 /** Host and path of a URL without the scheme; the input unchanged if it is not a URL. */
 export function shortUrl(url: string): string {
   try {

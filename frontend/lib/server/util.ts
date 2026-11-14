@@ -25,32 +25,6 @@ export function newestFirst<T>(items: readonly T[], timestamp: (item: T) => stri
     .map((entry) => entry.item);
 }
 
-/** A deterministic random source (mulberry32), for the seed and for tests. */
-export function seededRandom(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-/** FNV-1a: a stable 32-bit hash for picking deterministic variations. */
-export function hashString(text: string): number {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < text.length; i++) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return hash >>> 0;
-}
-
-export function pick<T>(items: readonly T[], random: () => number): T {
-  return items[Math.min(items.length - 1, Math.floor(random() * items.length))];
-}
-
 /** Trims, collapses inner whitespace. */
 export function cleanText(text: string): string {
   return text.replace(/\s+/g, " ").trim();

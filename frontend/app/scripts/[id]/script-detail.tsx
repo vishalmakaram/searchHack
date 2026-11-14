@@ -2,21 +2,35 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { ListX, Power, Rocket } from "lucide-react";
-import { useCallback, useState } from "react";
-import { activateScript, deactivateScript, deployScript, getScript, isNotFound, listRuns, listWebhooks } from "@/lib/api";
-import type { ScriptView } from "@/lib/types";
+import { ListX, Play, Power, Radar, Rocket } from "lucide-react";
+import { useCallback, useId, useState } from "react";
+import {
+  activateScript,
+  collectScript,
+  deactivateScript,
+  deployScript,
+  errorMessage,
+  getScript,
+  isNotFound,
+  listRuns,
+  listWebhooks,
+  runScriptUrl,
+} from "@/lib/api";
+import type { ScriptDetail as Script, ScriptView } from "@/lib/types";
 import { formatDateTime, formatPercent } from "@/lib/format";
+import { useEventStream } from "@/lib/use-event-stream";
 import { usePoll } from "@/lib/use-poll";
+import { LiveFeed } from "@/components/live/live-feed";
 import { RunList } from "@/components/runs/run-list";
 import { PageBody, PageHeader } from "@/components/shell/page";
-import { EnabledBadge, ScriptActivityBadge, ScriptStatusBadge } from "@/components/status/badges";
+import { EnabledBadge, ScriptActivityBadge, ScriptStatusBadge, StreamBadge } from "@/components/status/badges";
 import { Notice } from "@/components/status/notice";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { CodeBlock } from "@/components/ui/code-block";
 import { DetailList } from "@/components/ui/detail-list";
 import { ConfirmDialog } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/field";
 import { RelativeTime } from "@/components/ui/relative-time";
 import { PageSkeleton } from "@/components/ui/skeleton";
 import { EmptyState, ErrorState, NotFoundState, StaleBanner } from "@/components/ui/states";
@@ -31,7 +45,7 @@ const ACTIONS = {
     variant: "primary",
     title: "Deploy this script?",
     description:
-      "It becomes active and starts receiving events from every webhook routed to it. You can deactivate it afterwards, but it never returns to Developed.",
+      "It becomes active: every event from a webhook routed to it runs for real, which uses Telem and model credits. You can deactivate it afterwards, but it never returns to Developed.",
     confirmLabel: "Deploy",
     run: deployScript,
   },
@@ -112,7 +126,7 @@ export function ScriptDetail() {
 
       {script.status === "developed" ? (
         <Notice title="Never deployed">
-          This script has been compiled but not deployed, so it receives nothing. Events sent to it are skipped. Deploy it to
+          This script has been written but not deployed, so it receives nothing. You can still try it on a page below. Events sent to it are skipped. Deploy it to
           start processing.
         </Notice>
       ) : null}
@@ -136,6 +150,8 @@ export function ScriptDetail() {
           <DetailList items={stateItems(script)} />
         </CardBody>
       </Card>
+
+      <RunPanel script={script} onStarted={refresh} />
 
       <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Card>
@@ -216,7 +232,14 @@ export function ScriptDetail() {
       </div>
 
       <Card>
-        <CardHeader title="Recent runs" description="The last 25 events this script processed." />
+        <CardHeader title="Live activity" description="Each step the runtime takes for this script, as it happens." actions={<Stream />} />
+        <div className="border-t border-line">
+          <LiveFeed workspaceId={script.id} maxHeight="18rem" empty="Run a page to see each step here." />
+        </div>
+      </Card>
+
+      <Card>
+        <CardHeader title="Recent runs" description="The last 25 runs of this script. Open one to see what it made of the page." />
         <div className="border-t border-line">
           {runs.length > 0 ? (
             <RunList runs={runs} hideScript />
@@ -244,6 +267,89 @@ export function ScriptDetail() {
         }}
       />
     </PageBody>
+  );
+}
+
+function Stream() {
+  const { status } = useEventStream();
+  return <StreamBadge status={status} />;
+}
+
+/** Run one page now, or ask Telem what is new. Both are real work in the runtime. */
+function RunPanel({ script, onStarted }: { script: Script; onStarted: () => Promise<void> }) {
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState<"run" | "collect" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const inputId = useId();
+  const hintId = useId();
+
+  const start = async (kind: "run" | "collect") => {
+    if (busy) return;
+    setBusy(kind);
+    setError(null);
+    try {
+      if (kind === "run") {
+        await runScriptUrl(script.id, url.trim());
+        setUrl("");
+      } else {
+        await collectScript(script.id);
+      }
+      await onStarted();
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader
+        title="Run it now"
+        description="Take one page through the whole pipeline: fetch it, run the script, and let the delivery agent act on the result."
+      />
+      <CardBody className="flex flex-col gap-3">
+        <form
+          className="flex flex-wrap items-end gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (url.trim()) void start("run");
+          }}
+        >
+          <div className="flex min-w-64 flex-1 flex-col gap-1.5">
+            <label htmlFor={inputId} className="text-[13px] font-medium text-ink">
+              Page address
+            </label>
+            <Input
+              id={inputId}
+              type="url"
+              inputMode="url"
+              value={url}
+              onChange={(event) => setUrl(event.target.value)}
+              placeholder={script.sampleUrl ?? "https://example.com/news/article"}
+              aria-describedby={hintId}
+            />
+          </div>
+          <Button type="submit" variant="primary" icon={<Play className="size-4" aria-hidden />} loading={busy === "run"} disabled={!url.trim()}>
+            Run page
+          </Button>
+          <Button
+            icon={<Radar className="size-4" aria-hidden />}
+            loading={busy === "collect"}
+            disabled={script.status !== "active"}
+            title={script.status === "active" ? undefined : "Only an active script collects"}
+            onClick={() => void start("collect")}
+          >
+            Collect now
+          </Button>
+        </form>
+        <p id={hintId} className="text-xs text-ink-3">
+          A run takes a minute or more and uses Telem and model credits. Collect asks the Telem monitor what is new for this
+          workspace and runs up to three new pages{script.status === "active" ? "" : "; it is available once the script is active"}.
+        </p>
+        {error ? <Notice tone="red">{error}</Notice> : null}
+      </CardBody>
+    </Card>
   );
 }
 

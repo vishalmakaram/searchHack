@@ -6,7 +6,7 @@ import { useState } from "react";
 import { resetData } from "@/lib/api";
 import { ConfirmDialog } from "@/components/ui/dialog";
 
-/** Wipes the local mock database and reseeds it. For demos. */
+/** Empties the local store: script switches, webhooks, deliveries and the run log. */
 export function ResetButton() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -18,14 +18,14 @@ export function ResetButton() {
         className="inline-flex items-center gap-1.5 rounded-md text-xs font-medium text-ink-3 transition-colors hover:text-ink"
       >
         <RotateCcw className="size-3.5" aria-hidden />
-        Reset demo data
+        Clear local data
       </button>
       <ConfirmDialog
         open={open}
         onClose={() => setOpen(false)}
-        title="Reset demo data?"
-        description="Every workspace, script, webhook, delivery and run is replaced with the starting sample data. Webhook URLs you gave to Telem will stop working."
-        confirmLabel="Reset data"
+        title="Clear local data?"
+        description="Every webhook, delivery and run in the log is removed, and every script goes back to Developed. Workspaces, their scripts and their results in the runtime are not touched. Webhook URLs you gave to Telem will stop working."
+        confirmLabel="Clear data"
         danger
         onConfirm={async () => {
           await resetData();

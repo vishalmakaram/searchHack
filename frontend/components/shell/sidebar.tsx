@@ -36,7 +36,7 @@ export function Sidebar() {
       {/* The bottom padding keeps this clear of the Next.js dev indicator in the corner. */}
       <div className="mt-auto hidden flex-col gap-2 px-2.5 pb-12 md:flex">
         <p className="text-xs leading-relaxed text-ink-3">
-          Mock runtime. Data is stored on this machine.
+          Connected to the Sentinel runtime. Webhooks and the run log are stored on this machine.
         </p>
         <ResetButton />
       </div>

@@ -20,5 +20,8 @@ export function outputUrl(): string {
  * repository's workspaces/ beside frontend/.
  */
 export function workspacesDir(): string {
-  return path.resolve(process.env.SENTINEL_WORKSPACES_DIR || path.join(process.cwd(), "..", "workspaces"));
+  // turbopackIgnore: a runtime path, so `next build` must not trace the whole project from it.
+  return path.resolve(
+    /* turbopackIgnore: true */ process.env.SENTINEL_WORKSPACES_DIR || path.join(process.cwd(), "..", "workspaces"),
+  );
 }

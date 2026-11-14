@@ -8,7 +8,7 @@ const ORDER: ScriptStatus[] = ["active", "inactive", "developed"];
 const MEANINGS: Record<ScriptStatus, string> = {
   active: "Deployed and receiving events",
   inactive: "Switched off, receiving nothing",
-  developed: "Compiled, never deployed",
+  developed: "Written, never deployed",
 };
 
 /** How many scripts are in each status. Each tile opens the Scripts list filtered to it. */

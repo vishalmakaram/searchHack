@@ -70,12 +70,12 @@ export function ScriptsView() {
                 </LinkButton>
               }
             >
-              A script is compiled when you approve a workspace&rsquo;s queries.
+              A script is written when a workspace finishes building.
             </EmptyState>
           ) : (
             <EmptyState icon={<FileCode2 aria-hidden />} title={`No ${filter} scripts`}>
               {filter === "developed"
-                ? "Every compiled script has been deployed at least once."
+                ? "Every script has been deployed at least once."
                 : filter === "active"
                   ? "Deploy a developed script, or reactivate an inactive one, to start processing events."
                   : "No script has been switched off."}

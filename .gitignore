@@ -4,13 +4,17 @@
 
 # Python
 .venv/
+env/
+venv/
 __pycache__/
+*.py[cod]
+*$py.class
 *.pyc
 
 # Saved search responses (they cost credits to make, but stay local)
 cache/
 
-# macOS
+# System
 .DS_Store
 
 # Webhook secrets and received deliveries (local only)

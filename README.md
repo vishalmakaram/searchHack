@@ -11,8 +11,6 @@ Improving AI-powered search under the hood.
 | `eval/run_eval.py` | hit@3, hit@5 and top-3 word count for each engine and for consensus; saves `eval/results.json` |
 | `app.py` | Streamlit demo: each engine's top 5 side by side, then the consensus top 5 with agreement tags |
 
-The earlier Next.js prototype lives in `legacy-nextjs/`.
-
 ## Setup (Python 3.12+)
 
 ```bash

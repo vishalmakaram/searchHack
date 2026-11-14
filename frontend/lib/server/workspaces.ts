@@ -67,12 +67,19 @@ export function toWorkspaceView(raw: RawWorkspace, db: Db): WorkspaceView {
     status,
     createdAt: time(raw.status.created_at),
     builtAt: time(raw.status.built_at),
-    error: status === "failed" || status === "interrupted" ? (raw.status.error ?? null) : null,
+    error: status === "failed" || status === "interrupted" ? buildError(raw.status.error) : null,
     scriptStatus: status === "ready" ? (record?.status ?? "developed") : null,
     monitorId: typeof raw.status.monitor_id === "string" && raw.status.monitor_id ? raw.status.monitor_id : null,
     pagesSeen: Array.isArray(raw.status.seen_urls) ? raw.status.seen_urls.length : 0,
     resultsHandled: typeof raw.status.seq === "number" ? raw.status.seq : 0,
   };
+}
+
+/** The runtime appends a Python traceback to a build error; only the message before it is for people. */
+export function buildError(error: unknown): string | null {
+  if (typeof error !== "string") return null;
+  const message = error.split(/\n\s*Traceback \(most recent call last\)/)[0].trim();
+  return message === "" ? null : message;
 }
 
 export function buildCheck(raw: RawStatus): BuildCheck | null {

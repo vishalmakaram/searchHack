@@ -33,7 +33,11 @@ describe("workspaces", () => {
     serve(
       { id: "demo_ws", status: {}, memory: "" },
       rawWorkspace("ws_ready"),
-      rawWorkspace("ws_failed", { status: "failed", error: "Telem search failed", built_at: undefined }),
+      rawWorkspace("ws_failed", {
+        status: "failed",
+        error: "Telem search failed\nTraceback (most recent call last):\n  File \"server.py\", line 65",
+        built_at: undefined,
+      }),
       rawWorkspace("ws_building", { status: "creating", built_at: undefined, created_at: T0.getTime() / 1000 - 5 }),
     );
     await setDb({ scripts: [makeRecord("ws_ready", "active")] });

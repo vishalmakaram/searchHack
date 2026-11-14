@@ -12,3 +12,9 @@ cache/
 
 # macOS
 .DS_Store
+
+# Webhook secrets and received deliveries (local only)
+data/
+
+# Leftover local files from the deleted Next.js prototype
+legacy-nextjs/

@@ -1,26 +1,216 @@
 @import "tailwindcss";
 
+/*
+ * Design tokens.
+ *
+ * Colour is reserved for state. Chrome, text and primary buttons are neutral,
+ * so a green, blue, amber or red mark always means something.
+ *
+ * Tones are the five state colours. Each has a text colour (fg) that is
+ * readable on the surface, and a solid mark colour (dot). Statuses are mapped
+ * to tones in components/status/tones.ts and nowhere else.
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+  color-scheme: light;
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --plane: #f6f6f3;
+  --surface: #ffffff;
+  --surface-2: #f2f1ed;
+  --line: #e4e3dc;
+  --line-strong: #cfcdc4;
+  --ink: #111110;
+  --ink-2: #52514e;
+  --ink-3: #72706a;
+  --focus: #2a78d6;
+
+  --green-fg: #0a6b0a;
+  --green-dot: #0ca30c;
+  --blue-fg: #1c5cab;
+  --blue-dot: #2a78d6;
+  --amber-fg: #855800;
+  --amber-dot: #e39b00;
+  --red-fg: #b02a2a;
+  --red-dot: #d03b3b;
+  --grey-fg: #52514e;
+  --grey-dot: #898781;
+
+  --tint: 11%;
+  --shadow: 0 1px 2px rgb(17 17 16 / 0.04), 0 1px 1px rgb(17 17 16 / 0.03);
+  --shadow-pop: 0 12px 32px rgb(17 17 16 / 0.14), 0 2px 6px rgb(17 17 16 / 0.08);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    color-scheme: dark;
+
+    --plane: #0d0d0c;
+    --surface: #171716;
+    --surface-2: #21211f;
+    --line: #2b2b28;
+    --line-strong: #3d3d39;
+    --ink: #f0efec;
+    --ink-2: #c3c2b7;
+    --ink-3: #9a988f;
+    --focus: #6da7ec;
+
+    --green-fg: #5fd35f;
+    --green-dot: #0ca30c;
+    --blue-fg: #86b6ef;
+    --blue-dot: #3987e5;
+    --amber-fg: #fab219;
+    --amber-dot: #fab219;
+    --red-fg: #f39090;
+    --red-dot: #e05252;
+    --grey-fg: #c3c2b7;
+    --grey-dot: #898781;
+
+    --tint: 16%;
+    --shadow: none;
+    --shadow-pop: 0 16px 40px rgb(0 0 0 / 0.5);
   }
 }
 
+[data-tone="green"] {
+  --tone-fg: var(--green-fg);
+  --tone-dot: var(--green-dot);
+}
+[data-tone="blue"] {
+  --tone-fg: var(--blue-fg);
+  --tone-dot: var(--blue-dot);
+}
+[data-tone="amber"] {
+  --tone-fg: var(--amber-fg);
+  --tone-dot: var(--amber-dot);
+}
+[data-tone="red"] {
+  --tone-fg: var(--red-fg);
+  --tone-dot: var(--red-dot);
+}
+[data-tone="grey"] {
+  --tone-fg: var(--grey-fg);
+  --tone-dot: var(--grey-dot);
+}
+[data-tone] {
+  --tone-bg: color-mix(in oklab, var(--tone-dot) var(--tint), var(--surface));
+  --tone-line: color-mix(in oklab, var(--tone-dot) 34%, var(--surface));
+}
+
+@theme inline {
+  --color-plane: var(--plane);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-focus: var(--focus);
+  --color-tone-fg: var(--tone-fg);
+  --color-tone-dot: var(--tone-dot);
+  --color-tone-bg: var(--tone-bg);
+  --color-tone-line: var(--tone-line);
+
+  --font-sans: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+
+  --shadow-card: var(--shadow);
+  --shadow-pop: var(--shadow-pop);
+
+  --animate-enter: enter 0.28s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  --animate-pulse-dot: pulse-dot 1.6s ease-in-out infinite;
+  --animate-flow: flow 0.9s linear infinite;
+  --animate-shimmer: shimmer 1.4s ease-in-out infinite;
+
+  @keyframes enter {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes pulse-dot {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 color-mix(in oklab, var(--tone-dot) 45%, transparent);
+    }
+    50% {
+      box-shadow: 0 0 0 5px color-mix(in oklab, var(--tone-dot) 0%, transparent);
+    }
+  }
+  @keyframes flow {
+    to {
+      stroke-dashoffset: -12;
+    }
+  }
+  @keyframes shimmer {
+    0%,
+    100% {
+      opacity: 0.55;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+}
+
+html {
+  background: var(--plane);
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--plane);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* One focus treatment everywhere; components do not restyle it. */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--focus) 28%, transparent);
+}
+
+dialog::backdrop {
+  background: rgb(10 10 9 / 0.45);
+  backdrop-filter: blur(2px);
+}
+
+/* Status colour changes ease in rather than snapping when a poll lands. */
+[data-tone] {
+  transition:
+    color 0.25s ease,
+    background-color 0.25s ease,
+    border-color 0.25s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* The compile progress bar. Its duration and starting point are set inline. */
+@keyframes grow {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
 }

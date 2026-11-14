@@ -1,6 +1,7 @@
 """pi agents: one builds process.py, one delivers its output."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -10,7 +11,9 @@ import urllib.request
 
 from . import core, events
 
-INTEGRATIONS = "http://127.0.0.1:4096"
+# The output-integration proxy (output_integration/server.py) or any compatible one.
+INTEGRATIONS = os.environ.get("INTEGRATIONS_URL", "http://127.0.0.1:4096")
+DELIVERY_SERVICE = "sentinel-output-integration"
 # Both agents run on the cheap model by default; override with PI_MODEL.
 PI_MODEL = os.environ.get("PI_MODEL", "openrouter/deepseek/deepseek-v4.1-flash-1017")
 
@@ -235,57 +238,122 @@ def build(ws: core.Workspace, query: str, tier: str = "max") -> dict:
 
 # ------------------------------------------------------------------- worker
 
+def _json_call(url: str, body: dict | None = None, timeout: int = 4):
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(
+        url, data=data, method="POST" if body is not None else "GET",
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
 def capabilities() -> dict | None:
+    """The real proxy answers POST /api/v1/capabilities; older stubs answered GET /capabilities."""
     try:
-        with urllib.request.urlopen(f"{INTEGRATIONS}/capabilities", timeout=4) as r:
-            return json.loads(r.read())
+        payload = _json_call(f"{INTEGRATIONS}/api/v1/capabilities", {"include_schemas": False})
+        if isinstance(payload, dict) and payload.get("service"):
+            return payload
+    except Exception:
+        pass
+    try:
+        return _json_call(f"{INTEGRATIONS}/capabilities")
     except Exception:
         return None
 
 
-def worker_prompt(query: str, page: dict, output: dict, caps: dict | None) -> str:
-    caps_text = (
-        json.dumps(caps, indent=2)[:6000]
-        if caps else "the integration server is not reachable right now"
-    )
-    return f"""\
+def delivery_payload(ws_id: str, seq: int, page: dict, output: dict) -> dict:
+    """Contract-3 ProcessedResult, filled from what the extractor produced."""
+    data = output.get("data") or {}
+    event_type = str(data.get("page_type") or "change")[:60]
+    summary = (output.get("processed") or "").strip()[:500] or "change detected"
+    dedupe = hashlib.sha256(f"{ws_id}:{event_type}:{summary.lower()}".encode()).hexdigest()
+    return {
+        "workspace_id": ws_id,
+        "seq": seq,
+        "extracted": {
+            "event_type": event_type,
+            "impact": "medium",
+            "summary": summary,
+            "source_url": page.get("canonical_url") or page.get("url"),
+            "published_at": None,
+        },
+        "confidence": 0.9,
+        "dedupe_key": dedupe,
+        "raw_ref": f"telem://runs/{ws_id}/{seq}",
+        "pipeline_version": "sentinel/0.1",
+    }
+
+
+def worker_prompt(query: str, page: dict, output: dict, caps: dict | None,
+                  ws_id: str, seq: int) -> str:
+    url = page.get("canonical_url") or page.get("url")
+    head = f"""\
 You are the delivery agent for a web monitor. You receive already-processed results and you
 act on them. You do not browse the web and you do not rewrite the extractor.
 
 MONITORED QUERY: {query}
-PAGE: {page.get('title') or '(untitled)'} — {page.get('canonical_url') or page.get('url')}
+WORKSPACE: {ws_id}
+PAGE: {page.get('title') or '(untitled)'} — {url}
 
 PROCESSED RESULT:
 {output.get('processed') or '(empty)'}
 
 EXTRACTED DATA:
 {json.dumps(output.get('data') or {}, indent=2)[:2000]}
-
-INTEGRATIONS available at {INTEGRATIONS} (from /capabilities):
-{caps_text}
-
-Do exactly this:
+"""
+    record = f"""\
 1. Append to memory.md in the current directory (create it if missing) a section:
    "## <today's date> — <page title>", then 1-3 bullets: what is new, plus the source URL.
    Never delete or rewrite existing content; append only.
-2. If, and only if, one of the integrations above clearly applies to this result, call it
-   with curl, e.g. `curl -sS -X POST {INTEGRATIONS}/<path> -H 'Content-Type: application/json'
-   -d '<json body>'`. At most one integration call. If none applies, call none.
+"""
+    if caps and caps.get("service") == DELIVERY_SERVICE:
+        body = f"""\
+2. payload.json in this directory is a ready ProcessedResult ({seq=}). Send it to the output
+   service exactly once:
+     curl -sS -X POST {INTEGRATIONS}/api/v1/delivery/events \
+       -H 'Content-Type: application/json' -d @payload.json
+   Before sending you may only tighten `extracted.summary` (<=300 chars) and set
+   `extracted.impact` to "low", "medium" or "high". Do not add, drop or reorder keys.
+   Record the HTTP response next to the memory entry.
+"""
+    else:
+        caps_text = json.dumps(caps, indent=2)[:4000] if caps else \
+            "the integration server is not reachable right now"
+        body = f"""\
+2. Integrations available at {INTEGRATIONS}:
+{caps_text}
+   If, and only if, one of them clearly applies to this result, call it with curl
+   (`curl -sS -X POST {INTEGRATIONS}/<path> -H 'Content-Type: application/json' -d '<json>'`).
+   At most one integration call. If none applies, call none.
+"""
+    return head + record + body + """\
 3. Print one line: what you recorded and which integration you called (or "none").
 
-Do not ask questions. Do not create other files. Do not install anything."""
+Do not ask questions. Do not create other files. Do not install anything.""" + "\n"
 
 
 def deliver(ws: core.Workspace, query: str, page: dict, output: dict,
             timeout: int = 150) -> dict:
     caps = capabilities()
+    status = ws.load_status()
+    seq = int(status.get("seq") or 0) + 1
+    # Hand the model a valid payload instead of asking it to invent JSON.
+    payload_path = ws.path / "payload.json"
+    if caps and caps.get("service") == DELIVERY_SERVICE:
+        payload_path.write_text(json.dumps(delivery_payload(ws.id, seq, page, output), indent=2))
+    else:
+        payload_path.unlink(missing_ok=True)
+
     # No web tools: the worker acts on what it was given, nothing else.
     events.emit("delivery", workspace=ws.id, phase="start", url=page.get("url"),
-                integrations=bool(caps))
-    agent = run_pi(worker_prompt(query, page, output, caps), ws.path,
+                integrations=bool(caps), service=(caps or {}).get("service"))
+    agent = run_pi(worker_prompt(query, page, output, caps, ws.id, seq), ws.path,
                    timeout=timeout, tools="bash,read,write,edit",
                    log=ws.logs / "worker.out", agent="worker", workspace=ws.id)
     ws.log("worker", agent["stdout"] + "\n--- stderr ---\n" + agent["stderr"])
+    if agent["ok"]:
+        ws.save_status(seq=seq)
     events.emit("delivery", workspace=ws.id, phase="done", ok=agent["ok"],
                 seconds=agent["duration_s"], reply=agent["stdout"].strip()[-1200:])
     return {
@@ -293,5 +361,6 @@ def deliver(ws: core.Workspace, query: str, page: dict, output: dict,
         "duration_s": agent["duration_s"],
         "reply": agent["stdout"].strip()[-2000:],
         "integrations_available": bool(caps),
+        "service": (caps or {}).get("service"),
         "memory": ws.memory.read_text()[-3000:] if ws.memory.exists() else "",
     }

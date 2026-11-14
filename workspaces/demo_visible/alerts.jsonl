@@ -1,0 +1,1 @@
+{"workspace_id": "demo_visible", "seq": 1, "timestamp": "2026-11-14 22:11:04Z", "suppressed": false, "suppression_reason": "approved", "event_type": "demo_change", "impact": "high", "summary": "Synthetic demo: a watched pricing page changed", "source_url": "https://example.com/demo", "confidence": 0.92, "dedupe_key": "demo-visible-1"}

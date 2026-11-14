@@ -1,0 +1,35 @@
+{
+  "workspace_id": "demo_visible",
+  "processed_seqs": [
+    1
+  ],
+  "seen_keys": {
+    "demo-visible-1": 1794694264.0084252
+  },
+  "last_notified_values": {
+    "demo-visible-1": {
+      "summary": "Synthetic demo: a watched pricing page changed",
+      "data": {
+        "event_type": "demo_change",
+        "impact": "high",
+        "summary": "Synthetic demo: a watched pricing page changed",
+        "source_url": "https://example.com/demo",
+        "published_at": null,
+        "extra_data": {
+          "old_price": 100,
+          "new_price": 120
+        }
+      },
+      "timestamp": 1794694264.0084252
+    }
+  },
+  "alert_history": [
+    1794694264.0084252
+  ],
+  "stats": {
+    "total_received": 1,
+    "total_alerts_delivered": 1,
+    "total_suppressed": 0,
+    "doc_entries": 1
+  }
+}

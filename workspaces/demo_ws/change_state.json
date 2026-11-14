@@ -1,0 +1,38 @@
+{
+  "workspace_id": "demo_ws",
+  "processed_seqs": [
+    1
+  ],
+  "seen_keys": {
+    "089c2661478f39cb7ce437d5aca1d4df59b57296ec2eaf24d7b5cffdb0ff2617": 1794695148.046901
+  },
+  "last_notified_values": {
+    "089c2661478f39cb7ce437d5aca1d4df59b57296ec2eaf24d7b5cffdb0ff2617": {
+      "summary": "Real-time event detected for 'nvidia slop': Capital allocation and guidance changes announced in regulatory disclosure.",
+      "data": {
+        "event_type": "Sentinel Intelligence Finding",
+        "impact": "high",
+        "summary": "Real-time event detected for 'nvidia slop': Capital allocation and guidance changes announced in regulatory disclosure.",
+        "source_url": "https://finance.yahoo.com/news/live-market-intelligence-2026",
+        "published_at": "2026-11-14T22:25:48Z",
+        "extra_data": {
+          "routed_providers": [
+            "brave",
+            "exa",
+            "tavily"
+          ]
+        }
+      },
+      "timestamp": 1794695148.046901
+    }
+  },
+  "alert_history": [
+    1794695148.046901
+  ],
+  "stats": {
+    "total_received": 1,
+    "total_alerts_delivered": 1,
+    "total_suppressed": 0,
+    "doc_entries": 1
+  }
+}

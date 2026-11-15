@@ -63,13 +63,21 @@ const qInput = document.getElementById('q');
 const urlInput = document.getElementById('url');
 let total = 0, selected = null;
 
+function fmt(n) { return n == null ? '' : n.toLocaleString('en-US'); }
+
 function describe(e) {
   switch (e.type) {
     case 'workspace': return `${e.query} — created`;
     case 'build': return e.phase + [e.urls && `urls ${e.urls.length}`, e.sample, e.seconds && `${e.seconds}s`,
                                      e.error].filter(Boolean).map(s => ' · ' + s).join('');
-    case 'run': return [e.phase, e.title, e.duration_ms != null && `${e.duration_ms}ms`,
-                        e.keep === false && 'keep=false', e.reason].filter(Boolean).join(' · ');
+    case 'run': {
+      const size = e.phase === 'fetched' ? `${fmt(e.chars_in)} chars fetched`
+        : e.phase === 'processed' ? `${fmt(e.chars_in)} → ${fmt(e.chars_out)} chars` +
+          (e.ratio && e.ratio >= 1.05 ? ` · ${e.ratio}× smaller (−${e.saved_pct}%)` : '')
+        : null;
+      return [e.phase, e.title, size, e.duration_ms != null && `${e.duration_ms}ms`,
+              e.keep === false && 'keep=false', e.reason].filter(Boolean).join(' · ');
+    }
     case 'delivery': return [e.phase, e.seconds && `${e.seconds}s`, e.ok === false && 'FAILED', e.reply].filter(Boolean).join(' · ');
     case 'collect': return [e.phase, e.source, e.count != null && `${e.count} new`].filter(Boolean).join(' · ');
     case 'agent': return e.tool ? `tool ${e.tool} ${e.args || ''}` : (e.line || e.phase || '');

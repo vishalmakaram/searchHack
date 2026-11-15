@@ -146,7 +146,28 @@ def create_monitor(query: str, frequency: str = "1h", ttl: str = "1h") -> dict:
 
 
 def poll_monitor(monitor_id: str) -> dict:
+    """One-shot snapshot search. Items an agent has already found are not repeated here."""
     return _post(f"/v1/monitors/{monitor_id}/poll", {})
+
+
+def monitor_changes(monitor_id: str, limit: int = 50) -> dict:
+    """The monitor agent's change feed: entity_added / value_changed / tick, oldest first."""
+    return _get(f"/v1/monitors/{monitor_id}/agent/changes?limit={limit}")
+
+
+def change_items(feed: dict) -> list[dict]:
+    """entity_added changes that carry a URL, as items shaped like search results."""
+    items = []
+    for change in feed.get("changes") or []:
+        if change.get("kind") != "entity_added":
+            continue
+        after = change.get("after") or {}
+        url = after.get("url")
+        if not url:
+            continue
+        items.append({"url": url, "title": (change.get("subject") or {}).get("name") or url,
+                      "seq": change.get("seq"), "kind": after.get("kind")})
+    return items
 
 
 # -------------------------------------------------------------- workspace

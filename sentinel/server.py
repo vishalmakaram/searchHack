@@ -8,6 +8,7 @@ import os
 import queue
 import socket
 import threading
+import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -64,6 +65,11 @@ def background_build(ws: core.Workspace, query: str) -> None:
     try:
         out = agents.build(ws, query)
         ws.save_status(build=out)
+        if out.get("ok"):
+            # Seed the pipeline straight away: a monitor that has just been created has
+            # no finds yet, so a fresh workspace would otherwise show nothing until the
+            # next tick. This runs a real search and processes the first pages.
+            ws.save_status(last_collect=collect(ws))
     except Exception as e:
         ws.save_status(status="failed", error=f"{e}\n{traceback.format_exc()[-1500:]}")
 
@@ -75,14 +81,23 @@ def pipeline(ws: core.Workspace, url: str, page: dict | None = None) -> dict:
     events.emit("run", workspace=ws.id, phase="fetch", url=url)
     page = page or core.fetch(url)
     out["page"] = {k: page[k] for k in ("title", "content_length", "cached", "provider")}
+    chars_in = page["content_length"] or len(page.get("content") or "")
     events.emit("run", workspace=ws.id, phase="fetched", url=url,
-                title=page["title"], content_length=page["content_length"])
+                title=page["title"], content_length=chars_in, chars_in=chars_in,
+                cached=page.get("cached"), provider=page.get("provider"))
     proc = ws.run_process({"query": query, **page})
+    processed = ((proc.get("output") or {}).get("processed")) or ""
+    chars_out = len(processed)
+    ratio = round(chars_in / chars_out, 1) if chars_out else None
+    saved_pct = round(100 * (1 - chars_out / chars_in)) if chars_in and chars_out else None
     events.emit("run", workspace=ws.id, phase="processed", url=url,
                 ok=proc.get("ok"), duration_ms=proc.get("duration_ms"),
                 keep=(proc.get("output") or {}).get("keep"),
-                processed=(proc.get("output") or {}).get("processed"))
+                chars_in=chars_in, chars_out=chars_out, ratio=ratio, saved_pct=saved_pct,
+                processed=processed)
     out["process"] = {k: v for k, v in proc.items() if k != "stderr"}
+    out["chars_in"], out["chars_out"] = chars_in, chars_out
+    out["ratio"], out["saved_pct"] = ratio, saved_pct
     if not proc.get("ok"):
         out["ok"] = False
         out["error"] = "process.py failed"
@@ -106,8 +121,32 @@ def pipeline(ws: core.Workspace, url: str, page: dict | None = None) -> dict:
     out["delivery"] = agents.deliver(ws, query, page, result)
     out["ok"] = True
     with _lock:
+        record_page(ws, page, chars_in, chars_out, result, out["delivery"],
+                out.get("ratio"), out.get("saved_pct"))
         ws.save_status(fingerprints={**seen_fp, url: fp})
     return out
+
+
+def record_page(ws: core.Workspace, page: dict, chars_in: int, chars_out: int,
+                result: dict, delivery: dict, ratio: float | None = None,
+                saved_pct: int | None = None) -> None:
+    """A compact per-page log so a UI can show what the pipeline actually did."""
+    with _lock:
+        pages = list(ws.load_status().get("pages") or [])
+    pages.insert(0, {
+        "url": page.get("canonical_url") or page.get("url"),
+        "title": (page.get("title") or "")[:160],
+        "chars_in": chars_in,
+        "chars_out": chars_out,
+        "ratio": ratio,
+        "saved_pct": saved_pct,
+        "keep": bool(result.get("keep", True)),
+        "ok": bool(delivery.get("ok")),
+        "seconds": delivery.get("duration_s"),
+        "at": time.time(),
+    })
+    with _lock:
+        ws.save_status(pages=pages[:25])
 
 
 def collect(ws: core.Workspace, max_pages: int = 3) -> dict:
@@ -122,25 +161,52 @@ def collect(ws: core.Workspace, max_pages: int = 3) -> dict:
         ws.save_status(monitor_id=monitor_id)
         out["created_monitor"] = monitor_id
     out["monitor_id"] = monitor_id
-    polled = core.poll_monitor(monitor_id)
-    (ws.fixtures / "poll.json").write_text(json.dumps(polled, indent=2))
-    items = core.search_items(polled)
-    out["source"] = "monitor"
-    events.emit("collect", workspace=ws.id, phase="polled", monitor_id=monitor_id)
+
+    # The monitor agent's change feed is the real item source: entity_added carries the
+    # URL it found. Poll is a one-shot snapshot search and comes back empty once the
+    # agent has already seen those pages, so it is only a fallback.
+    since = int(status.get("changes_seq") or 0)
+    source = "monitor"
+    items: list[dict] = []
+    try:
+        feed = core.monitor_changes(monitor_id)
+        (ws.fixtures / "changes.json").write_text(json.dumps(feed, indent=2))
+        items = [i for i in core.change_items(feed) if (i.get("seq") or 0) > since]
+        out["watermark"] = feed.get("watermark")
+        events.emit("collect", workspace=ws.id, phase="changes", monitor_id=monitor_id,
+                    count=len(items), watermark=feed.get("watermark"))
+    except Exception as e:  # noqa: BLE001 — a feed hiccup must not kill the collect
+        out["changes_error"] = str(e)[:200]
+
     if not items:
-        # A fresh monitor has no snapshot yet, so its first poll is empty. Escalate
+        polled = core.poll_monitor(monitor_id)
+        (ws.fixtures / "poll.json").write_text(json.dumps(polled, indent=2))
+        items = core.search_items(polled)
+        source = "poll"
+        events.emit("collect", workspace=ws.id, phase="polled", monitor_id=monitor_id)
+
+    if not items:
+        # A monitor still compiling has neither changes nor snapshot items. Escalate
         # with a search for the same query rather than returning nothing.
         escalated = core.search(query, tier="extended", num_results=10)
         (ws.fixtures / "escalation.json").write_text(json.dumps(escalated, indent=2))
         items = core.search_items(escalated)
-        out["source"] = "escalation"
+        source = "escalation"
+    out["source"] = source
+
     seen = set(status.get("seen_urls") or [])
-    fresh = [i for i in items if i.get("url") and i["url"] not in seen][:max_pages]
+    unseen = [i for i in items if i.get("url") and i["url"] not in seen]
+    fresh = unseen[:max_pages]
     out["new_items"] = len(fresh)
     events.emit("collect", workspace=ws.id, phase="new_items", source=out["source"],
                 count=len(fresh), urls=[i.get("url") for i in fresh])
     out["results"] = [pipeline(ws, i["url"]) for i in fresh]
-    ws.save_status(seen_urls=sorted(seen | {i["url"] for i in fresh}))
+    # Only consume the watermark once every unseen item has been run; with more items
+    # than max_pages, leave the rest queued for the next collect.
+    cap_hit = len(unseen) > len(fresh)
+    consumed = max((i.get("seq") or 0) for i in fresh) if cap_hit and fresh else 0
+    ws.save_status(seen_urls=sorted(seen | {i["url"] for i in fresh}),
+                   changes_seq=consumed or out.get("watermark") or status.get("changes_seq") or 0)
     return out
 
 

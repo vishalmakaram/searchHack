@@ -254,6 +254,19 @@ def build(ws: core.Workspace, query: str, tier: str = "max") -> dict:
     events.emit("build", workspace=ws.id, phase="ready" if ok else "failed",
                 seconds=round(time.time() - t0, 1), sample=page["url"],
                 error=None if ok else str(check.get("error"))[:600])
+
+    # Start monitoring as soon as the extractor is ready, not on the first collect: the
+    # monitor agent has to compile (~1 min) before it emits anything, so this buys time.
+    if ok:
+        try:
+            mon = core.create_monitor(query)
+            monitor_id = mon.get("id") or mon.get("monitor_id")
+            ws.save_status(monitor_id=monitor_id)
+            events.emit("build", workspace=ws.id, phase="monitor", monitor_id=monitor_id)
+        except Exception as e:  # noqa: BLE001 — a failed monitor is not a failed build
+            events.emit("build", workspace=ws.id, phase="monitor_failed",
+                        error=str(e)[:200])
+            result["monitor_error"] = str(e)[:200]
     return {**result, "ok": ok}
 
 

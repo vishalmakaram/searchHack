@@ -29,3 +29,6 @@ legacy-nextjs/
 
 # Runtime workspaces are machine-local; the tracked demo_* ones stay in git
 workspaces/*
+# omp/pi agent scratch state
+.omp/
+.pi/

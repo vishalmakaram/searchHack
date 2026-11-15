@@ -17,7 +17,7 @@ from . import agents, core, events
 PORT = int(os.environ.get("PORT", "8000"))
 # 0.0.0.0 so the dashboard is reachable over tailscale/LAN; localhost still works.
 HOST = os.environ.get("HOST", "0.0.0.0")
-_lock = threading.Lock()
+_lock = threading.RLock()  # reentrant: pipeline -> record_page
 
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -107,6 +107,9 @@ def pipeline(ws: core.Workspace, url: str, page: dict | None = None) -> dict:
         out.update(ok=True, dropped=True, reason=result.get("processed") or "keep=false")
         events.emit("run", workspace=ws.id, phase="dropped", url=url,
                     reason=out["reason"][:400])
+        with _lock:
+            record_page(ws, page, chars_in, chars_out, result, {},
+                        out.get("ratio"), out.get("saved_pct"), note="dropped")
         return out
     # The worker agent costs a model call, so only wake it when the extraction
     # actually changed since the last time this URL was processed.
@@ -117,6 +120,9 @@ def pipeline(ws: core.Workspace, url: str, page: dict | None = None) -> dict:
     if seen_fp.get(url) == fp:
         out.update(ok=True, unchanged=True, reason="processed text unchanged since last run")
         events.emit("run", workspace=ws.id, phase="unchanged", url=url, fingerprint=fp)
+        with _lock:
+            record_page(ws, page, chars_in, chars_out, result, {},
+                        out.get("ratio"), out.get("saved_pct"), note="unchanged")
         return out
     out["delivery"] = agents.deliver(ws, query, page, result)
     out["ok"] = True
@@ -129,7 +135,7 @@ def pipeline(ws: core.Workspace, url: str, page: dict | None = None) -> dict:
 
 def record_page(ws: core.Workspace, page: dict, chars_in: int, chars_out: int,
                 result: dict, delivery: dict, ratio: float | None = None,
-                saved_pct: int | None = None) -> None:
+                saved_pct: int | None = None, note: str | None = None) -> None:
     """A compact per-page log so a UI can show what the pipeline actually did."""
     with _lock:
         pages = list(ws.load_status().get("pages") or [])
@@ -142,6 +148,7 @@ def record_page(ws: core.Workspace, page: dict, chars_in: int, chars_out: int,
         "saved_pct": saved_pct,
         "keep": bool(result.get("keep", True)),
         "ok": bool(delivery.get("ok")),
+        "note": note or ("delivered" if delivery else "processed"),
         "seconds": delivery.get("duration_s"),
         "at": time.time(),
     })

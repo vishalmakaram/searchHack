@@ -68,8 +68,13 @@ def background_build(ws: core.Workspace, query: str) -> None:
         if out.get("ok"):
             # Seed the pipeline straight away: a monitor that has just been created has
             # no finds yet, so a fresh workspace would otherwise show nothing until the
-            # next tick. This runs a real search and processes the first pages.
-            ws.save_status(last_collect=collect(ws))
+            # next tick. This runs a real search and processes the first pages, and a
+            # failure here is recorded, never turned into a failed build.
+            try:
+                ws.save_status(last_collect=collect(ws))
+            except Exception as e:  # noqa: BLE001
+                ws.save_status(last_collect_error=str(e)[:600])
+                events.emit("collect", workspace=ws.id, phase="failed", error=str(e)[:300])
     except Exception as e:
         ws.save_status(status="failed", error=f"{e}\n{traceback.format_exc()[-1500:]}")
 
@@ -164,11 +169,19 @@ def collect(ws: core.Workspace, max_pages: int = 3) -> dict:
     monitor_id = status.get("monitor_id")
     out: dict = {"workspace": ws.id, "query": query}
     if not monitor_id:
-        mon = core.create_monitor(query)
-        monitor_id = mon.get("id") or mon.get("monitor_id")
-        ws.save_status(monitor_id=monitor_id)
-        out["created_monitor"] = monitor_id
-    out["monitor_id"] = monitor_id
+        # Monitors are a Telem service of their own and do return 503; a workspace whose
+        # extractor works must still be able to collect pages when they are down.
+        try:
+            mon = core.create_monitor(query)
+            monitor_id = mon.get("id") or mon.get("monitor_id")
+            ws.save_status(monitor_id=monitor_id)
+            out["created_monitor"] = monitor_id
+        except Exception as e:  # noqa: BLE001
+            out["monitor_error"] = str(e)[:200]
+            events.emit("collect", workspace=ws.id, phase="monitor_failed",
+                        error=str(e)[:200])
+    if monitor_id:
+        out["monitor_id"] = monitor_id
 
     # The monitor agent's change feed is the real item source: entity_added carries the
     # URL it found. Poll is a one-shot snapshot search and comes back empty once the
@@ -177,6 +190,8 @@ def collect(ws: core.Workspace, max_pages: int = 3) -> dict:
     source = "monitor"
     items: list[dict] = []
     try:
+        if not monitor_id:
+            raise RuntimeError("no monitor")
         feed = core.monitor_changes(monitor_id)
         (ws.fixtures / "changes.json").write_text(json.dumps(feed, indent=2))
         items = [i for i in core.change_items(feed) if (i.get("seq") or 0) > since]
@@ -186,12 +201,15 @@ def collect(ws: core.Workspace, max_pages: int = 3) -> dict:
     except Exception as e:  # noqa: BLE001 — a feed hiccup must not kill the collect
         out["changes_error"] = str(e)[:200]
 
-    if not items:
-        polled = core.poll_monitor(monitor_id)
-        (ws.fixtures / "poll.json").write_text(json.dumps(polled, indent=2))
-        items = core.search_items(polled)
-        source = "poll"
-        events.emit("collect", workspace=ws.id, phase="polled", monitor_id=monitor_id)
+    if not items and monitor_id:
+        try:
+            polled = core.poll_monitor(monitor_id)
+            (ws.fixtures / "poll.json").write_text(json.dumps(polled, indent=2))
+            items = core.search_items(polled)
+            source = "poll"
+            events.emit("collect", workspace=ws.id, phase="polled", monitor_id=monitor_id)
+        except Exception as e:  # noqa: BLE001
+            out["poll_error"] = str(e)[:200]
 
     if not items:
         # A monitor still compiling has neither changes nor snapshot items. Escalate
@@ -199,7 +217,7 @@ def collect(ws: core.Workspace, max_pages: int = 3) -> dict:
         escalated = core.search(query, tier="extended", num_results=10)
         (ws.fixtures / "escalation.json").write_text(json.dumps(escalated, indent=2))
         items = core.search_items(escalated)
-        source = "escalation"
+        source = "search"
     out["source"] = source
 
     seen = set(status.get("seen_urls") or [])

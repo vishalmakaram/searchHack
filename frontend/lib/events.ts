@@ -42,6 +42,12 @@ export type RuntimeEvent =
       url?: string;
       title?: string;
       content_length?: number;
+      /** Characters the fetch returned, and what process.py emitted from them. */
+      chars_in?: number;
+      chars_out?: number;
+      /** chars_in / chars_out, and the share of characters the extractor dropped. */
+      ratio?: number;
+      saved_pct?: number;
       ok?: boolean;
       duration_ms?: number;
       keep?: boolean;
@@ -61,7 +67,7 @@ export type RuntimeEvent =
     })
   | (Base & {
       type: "collect";
-      phase: "polled" | "new_items";
+      phase: "changes" | "polled" | "new_items";
       monitor_id?: string;
       source?: string;
       count?: number;

@@ -1,7 +1,7 @@
 // Turns a runtime event into one line a person can read.
 
 import type { RuntimeEvent } from "@/lib/events";
-import { formatDuration, plural, shortUrl } from "@/lib/format";
+import { formatCount, formatDuration, plural, shortUrl } from "@/lib/format";
 import type { Tone } from "@/components/status/tones";
 
 export interface EventLine {
@@ -15,6 +15,14 @@ export interface EventLine {
 
 const url = (value: string | undefined) => (value ? shortUrl(value) : "a page");
 const clip = (text: string, max = 220) => (text.length > max ? `${text.slice(0, max)}…` : text);
+
+/** "23,267 → 691 chars · 33.7× smaller (−97%)" — how much the script threw away. */
+function shrink(event: { chars_in?: number; chars_out?: number; ratio?: number; saved_pct?: number }): string {
+  if (event.chars_in === undefined || event.chars_out === undefined) return "";
+  const size = `${formatCount(event.chars_in)} → ${formatCount(event.chars_out)} chars`;
+  if (!event.ratio || event.ratio < 1.05) return size;
+  return `${size} · ${event.ratio}× smaller${event.saved_pct !== undefined ? ` (−${event.saved_pct}%)` : ""}`;
+}
 
 export function describeEvent(event: RuntimeEvent): EventLine {
   switch (event.type) {
@@ -62,13 +70,26 @@ export function describeEvent(event: RuntimeEvent): EventLine {
         case "fetch":
           return { label: "Run", text: `Fetching ${url(event.url)}`, tone: "blue" };
         case "fetched":
-          return { label: "Run", text: `Fetched ${event.title ? `“${clip(event.title, 80)}”` : url(event.url)}`, tone: "blue" };
-        case "processed":
-          return event.ok === false
-            ? { label: "Run", text: "process.py failed on the page", tone: "red" }
-            : { label: "Run", text: event.processed ? `Script read: ${clip(event.processed)}` : "Script processed the page", tone: "blue" };
+          return {
+            label: "Run",
+            text: `Fetched ${event.title ? `“${clip(event.title, 80)}”` : url(event.url)}${event.chars_in !== undefined ? ` · ${formatCount(event.chars_in)} chars` : ""}`,
+            tone: "blue",
+          };
+        case "processed": {
+          if (event.ok === false) return { label: "Run", text: "process.py failed on the page", tone: "red" };
+          const size = shrink(event);
+          return {
+            label: "Run",
+            text: `Script read ${size || "the page"}${typeof event.duration_ms === "number" ? ` · ${formatDuration(event.duration_ms)}` : ""}`,
+            tone: "blue",
+          };
+        }
         case "dropped":
-          return { label: "Run", text: `Dropped${event.reason ? `: ${clip(event.reason)}` : ""}`, tone: "grey" };
+          return {
+            label: "Run",
+            text: [`Dropped${shrink(event) ? ` ${shrink(event)}` : ""}`, event.reason ? clip(event.reason) : ""].filter(Boolean).join(" · "),
+            tone: "grey",
+          };
         case "unchanged":
           return { label: "Run", text: `Unchanged since last time: ${url(event.url)}`, tone: "grey" };
       }
@@ -91,6 +112,9 @@ export function describeEvent(event: RuntimeEvent): EventLine {
           };
 
     case "collect":
+      if (event.phase === "changes") {
+        return { label: "Collect", text: `Monitor change feed: ${plural(event.count ?? 0, "new page")}`, tone: (event.count ?? 0) > 0 ? "blue" : "grey" };
+      }
       if (event.phase === "polled") return { label: "Collect", text: "Asked the Telem monitor what is new", tone: "blue" };
       return {
         label: "Collect",

@@ -72,6 +72,12 @@ export function formatBytes(bytes: number | null | undefined): string {
   return `${(bytes / 1_000_000).toFixed(1)} MB`;
 }
 
+/** 23267 -> "23,267". null -> "—". */
+export function formatCount(count: number | null | undefined): string {
+  if (count === null || count === undefined || Number.isNaN(count)) return "—";
+  return count.toLocaleString("en-US");
+}
+
 /** 0.25 -> "25%". null -> "—". */
 export function formatPercent(ratio: number | null | undefined): string {
   if (ratio === null || ratio === undefined || Number.isNaN(ratio)) return "—";

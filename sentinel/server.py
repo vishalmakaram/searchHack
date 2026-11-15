@@ -106,7 +106,8 @@ def pipeline(ws: core.Workspace, url: str, page: dict | None = None) -> dict:
     if not result.get("keep", True):
         out.update(ok=True, dropped=True, reason=result.get("processed") or "keep=false")
         events.emit("run", workspace=ws.id, phase="dropped", url=url,
-                    reason=out["reason"][:400])
+                    chars_in=chars_in, chars_out=chars_out, ratio=ratio,
+                    saved_pct=saved_pct, reason=out["reason"][:400])
         with _lock:
             record_page(ws, page, chars_in, chars_out, result, {},
                         out.get("ratio"), out.get("saved_pct"), note="dropped")
